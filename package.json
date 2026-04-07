@@ -1,0 +1,47 @@
+{
+  "name": "surfagent-x",
+  "version": "0.1.0",
+  "description": "X adapter for SurfAgent — production-grade X/Twitter navigation, timeline extraction, posting, replies, likes, and recovery via MCP.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "x",
+    "twitter",
+    "surfagent",
+    "browser",
+    "automation",
+    "ai-agent",
+    "social-media"
+  ],
+  "homepage": "https://surfagent.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/surfagentapp/surfagent-x"
+  },
+  "license": "MIT",
+  "author": "SurfAgent <support@surfagent.app>",
+  "bin": {
+    "surfagent-x": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/index.js && esbuild src/smoke.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/smoke.js && chmod +x dist/index.js",
+    "smoke": "npm run build && node dist/smoke.js",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.5",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
