@@ -20987,6 +20987,7 @@ async function getXState(tabId) {
 }
 async function waitForXReady(tabId, expected = {}) {
   const deadline = Date.now() + DEFAULT_WAIT_TIMEOUT_MS;
+  const requiredStablePasses = expected.pageKind === "search" ? 1 : 2;
   let stableCount = 0;
   let lastFingerprint = "";
   while (Date.now() < deadline) {
@@ -20996,7 +20997,7 @@ async function waitForXReady(tabId, expected = {}) {
     const fingerprint = String(state.fingerprint ?? "");
     if (ready) {
       stableCount = fingerprint === lastFingerprint ? stableCount + 1 : 1;
-      if (stableCount >= 2) return state;
+      if (stableCount >= requiredStablePasses) return state;
     } else {
       stableCount = 0;
     }
@@ -21036,7 +21037,8 @@ async function searchXProfiles(query, limit = 10) {
 async function getCommunityFeed(limit = 10, communityUrl) {
   const tab = communityUrl ? await navigateX(communityUrl) : await requireXTab();
   await waitForXReady(tab.id, communityUrl ? { pageKind: "community" } : {});
-  await sleep(1200);
+  await evaluate(buildCommunityTabSelectionExpression("Posts"), tab.id).catch(() => null);
+  await sleep(1400);
   const raw = await evaluate(buildCommunityFeedExpression(limit), tab.id);
   return parseJsonResult(raw);
 }
@@ -21455,6 +21457,12 @@ function buildProfileSearchExpression(limit) {
   })();`;
 }
 function buildSearchTabSelectionExpression(tabLabel) {
+  return buildTabSelectionExpression(tabLabel, "search_tab_not_found");
+}
+function buildCommunityTabSelectionExpression(tabLabel) {
+  return buildTabSelectionExpression(tabLabel, "community_tab_not_found");
+}
+function buildTabSelectionExpression(tabLabel, errorCode) {
   return String.raw`(() => {
     const label = ${JSON.stringify(tabLabel)}.toLowerCase();
     const clickEl = (el) => {
@@ -21469,7 +21477,7 @@ function buildSearchTabSelectionExpression(tabLabel) {
     };
     const tabs = [...document.querySelectorAll('[role="tab"], a[role="tab"]')];
     const target = tabs.find(el => ((el.textContent || '').trim().toLowerCase() === label)) || null;
-    if (!target) return JSON.stringify({ ok: false, error: 'search_tab_not_found', requested: ${JSON.stringify(tabLabel)} });
+    if (!target) return JSON.stringify({ ok: false, error: ${JSON.stringify(errorCode)}, requested: ${JSON.stringify(tabLabel)} });
     clickEl(target);
     return JSON.stringify({ ok: true, selected: (target.textContent || '').trim() });
   })();`;
@@ -21491,19 +21499,20 @@ function buildCommunityExtractionExpression() {
     const path = location.pathname;
     const communityId = path.match(/\/i\/communities\/(\d+)/)?.[1] || null;
     const clean = (text) => (text || '').replace(/To view keyboard shortcuts, press question mark/gi, '').replace(/View keyboard shortcuts/gi, '').replace(/\s+/g, ' ').trim();
+    const isJunk = (text) => !text || /^home$|^explore$|^notifications$|^messages$|^post$|^posts$|^rules$|^about$|^members?$|^admin tools$/i.test(text) || /keyboard shortcuts|click to join|joined?$/i.test(text);
     const pageTitle = clean((document.title || '').replace(/\s*\/\s*X$/i, '').replace(/\s*Community$/i, ''));
     const headings = [...document.querySelectorAll('h1, h2, [role="heading"]')]
       .map(el => clean(el.textContent || ''))
       .filter(Boolean)
-      .filter(text => text.length < 120 && !/^home$|^explore$|^notifications$/i.test(text));
+      .filter(text => text.length < 120 && !isJunk(text));
     const pageText = document.body?.innerText || '';
-    const lines = pageText.split(/\n+/).map(line => clean(line)).filter(Boolean);
+    const lines = pageText.split(/\n+/).map(line => clean(line)).filter(Boolean).filter(line => !isJunk(line));
     const statsLineCandidates = lines.filter(line => /members?/i.test(line) || /^\d[\d.,KMkm\s]*Posts?$/i.test(line));
     const memberCount = statsLineCandidates.find(line => /members?/i.test(line)) || null;
     const postCount = statsLineCandidates.find(line => /^\d[\d.,KMkm\s]*Posts?$/i.test(line)) || null;
     const name = headings.find(text => /community/i.test(pageTitle) ? text.toLowerCase() === pageTitle.toLowerCase() : true) || pageTitle || null;
-    const tagline = headings.find(text => text !== name && text.length < 80) || null;
-    const descriptionCandidates = lines.filter(line => line.length > 12 && line.length < 280 && line !== name && line !== tagline && !/members?|posts?|click to join|join(ed)?$/i.test(line));
+    const tagline = headings.find(text => text !== name && text.length < 80 && !/rules|notifications|members?|posts?/i.test(text)) || null;
+    const descriptionCandidates = lines.filter(line => line.length > 12 && line.length < 280 && line !== name && line !== tagline && !/members?|posts?|click to join|join(ed)?|notifications|rules/i.test(line));
     const description = descriptionCandidates[0] || null;
     const joinButton = [...document.querySelectorAll('div[role="button"], button')]
       .map(el => ({ text: clean(el.textContent || ''), disabled: !!el.getAttribute('disabled') || !!el.getAttribute('aria-disabled') }))
@@ -21597,11 +21606,20 @@ function buildProfileExtractionExpression() {
 function buildProfilePostsExpression(username, limit) {
   return String.raw`(() => {
     ${buildSharedExtractionHelpers()}
-    const posts = [...document.querySelectorAll('article[data-testid="tweet"]')]
-      .slice(0, ${Math.max(1, Math.min(limit, 30))})
-      .map((article, index) => ({ ...parsePost(article, index), profileUsername: ${JSON.stringify(username)} }))
-      .filter(post => post.text || post.url);
-    return JSON.stringify({ ok: true, count: posts.length, posts, diagnostics: diagnostics() });
+    const targetUsername = ${JSON.stringify(username)}.replace(/^@+/, '').toLowerCase();
+    const articles = [...document.querySelectorAll('article[data-testid="tweet"]')];
+    const parsed = articles.map((article, index) => {
+      const post = { ...parsePost(article, index), profileUsername: ${JSON.stringify(username)} };
+      const socialContext = (article.querySelector('[data-testid="socialContext"]')?.textContent || article.querySelector('[data-testid="User-Name"] + div')?.textContent || '').trim();
+      const authorHandle = (post.author || '').replace(/^@+/, '').toLowerCase();
+      const authoredByTarget = authorHandle === targetUsername;
+      const looksLikeRepost = /reposted|repost/i.test(socialContext);
+      return { ...post, authoredByTarget, socialContext: socialContext || null, looksLikeRepost };
+    });
+    const filtered = parsed
+      .filter(post => (post.text || post.url) && post.authoredByTarget && !post.looksLikeRepost)
+      .slice(0, ${Math.max(1, Math.min(limit, 30))});
+    return JSON.stringify({ ok: true, count: filtered.length, posts: filtered, diagnostics: { ...diagnostics(), parsedCount: parsed.length, filteredOut: Math.max(parsed.length - filtered.length, 0), targetUsername } });
   })();`;
 }
 function buildThreadExtractionExpression(postId, limit) {
