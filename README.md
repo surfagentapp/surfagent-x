@@ -1,50 +1,40 @@
 # surfagent-x
 
-X adapter for [SurfAgent](https://surfagent.app) — production-grade X/Twitter navigation, timeline extraction, posting, replies, likes, and recovery via MCP.
+X adapter for [SurfAgent](https://surfagent.app).
 
-## What it does
+This adapter gives AI agents X-native verbs for navigation, extraction, posting, replies, likes, recovery, and deeper research workflows.
 
-The base `surfagent-mcp` gives an AI agent generic browser hands.
+## What this adapter is for
 
-`surfagent-x` gives it **X-native verbs** so it does not have to rediscover X's unstable DOM every run.
-
-Instead of:
-- inspect page
-- guess selector
-- click
-- hope composer state is real
-- get lied to by button state
-
-You get:
-- `x_get_state`
-- `x_open_home`
-- `x_open_profile`
-- `x_open_post`
-- `x_get_timeline`
-- `x_search_posts`
-- `x_create_post`
-- `x_reply_to_post`
-- `x_like_post`
-- `x_recover`
+Use `surfagent-x` when you need reliable X workflows like:
+- opening key X surfaces
+- checking route-specific state
+- extracting timelines, profiles, communities, posts, and threads
+- creating posts and replies
+- liking posts
+- running X-specific recovery flows
+- doing broader topic or community research with receipts
 
 ## Why this exists
 
-X is not a generic website. It has:
+X is not a generic website.
+
+It has:
 - route-specific UI states
 - React-sensitive composer behavior
 - flaky button-state signals
-- community-specific posting behavior
-- delayed state settlement after navigation and actions
+- community-specific flows
+- delayed state settlement after actions
 
-So this adapter wraps X-specific navigation, action, verification, and recovery logic into a dedicated MCP.
+So this adapter wraps X-specific navigation, action, verification, and recovery into dedicated tools.
 
-## Tools
+## Core tool groups
 
-### Health & Setup
+### Health and setup
 - `x_health_check`
 - `x_open`
 
-### Navigation & State
+### Navigation and state
 - `x_get_state`
 - `x_open_home`
 - `x_open_profile`
@@ -52,7 +42,7 @@ So this adapter wraps X-specific navigation, action, verification, and recovery 
 - `x_open_search`
 - `x_open_post`
 
-### Timeline & Search
+### Timeline and search
 - `x_get_timeline`
 - `x_search_posts`
 - `x_open_community`
@@ -77,43 +67,23 @@ So this adapter wraps X-specific navigation, action, verification, and recovery 
 - `x_research_topic`
 - `x_map_community`
 
-Both autonomous tools can optionally persist full JSON bundles to disk with `save: true` and an optional `outputDir`. Default save path:
+## Receipts and saved runs
+
+Autonomous research tools can optionally save bundles to disk.
+
+Default output path:
 - `~/.surfagent/receipts/x-research`
 
-Saved runs now produce a folder with:
+Saved runs can include:
 - `bundle.json`
 - `summary.json`
 - `receipts.json`
-- one JSON file per output dataset (`posts-search.json`, `posts.json`, `threads.json`, etc.)
+- per-dataset JSON files
 - `SUMMARY.md`
 
-Autonomous receipts now include:
-- failure classification per failed step
-- retry/recovery event history
-- run summary counts by failure class
+## How to use it
 
-## Setup
-
-### Claude Code
-
-```bash
-claude mcp add surfagent-x -- npx -y surfagent-x
-```
-
-### Claude Desktop / Cursor / Windsurf
-
-```json
-{
-  "mcpServers": {
-    "surfagent-x": {
-      "command": "npx",
-      "args": ["-y", "surfagent-x"]
-    }
-  }
-}
-```
-
-## Use alongside base SurfAgent MCP
+Run this adapter alongside the base SurfAgent MCP.
 
 ```json
 {
@@ -130,23 +100,32 @@ claude mcp add surfagent-x -- npx -y surfagent-x
 }
 ```
 
-## Environment Variables
+If you are new to SurfAgent, start here first:
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/start-here.md>
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/mcp-server.md>
+- <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/skills-and-adapters.md>
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SURFAGENT_DAEMON_URL` | `http://127.0.0.1:7201` | SurfAgent daemon URL |
-| `SURFAGENT_AUTH_TOKEN` | auto-detected | Optional auth token override |
+## When to use this vs skills vs raw MCP
 
-## Product position
+- use `surfagent-mcp` for raw browser control
+- use `surfagent-skills` for workflow rules and operating discipline
+- use `surfagent-x` when you want reliable X-native verbs instead of rediscovering X every run
 
-- **skills** teach the agent strategy
-- **adapters** provide reliable site-native tools
+## Environment variables
 
-`surfagent-x` is the first serious site adapter in that model.
+- `SURFAGENT_DAEMON_URL` default: `http://127.0.0.1:7201`
+- `SURFAGENT_AUTH_TOKEN` optional override, otherwise auto-detected
 
 ## Status
 
-Early but hardened adapter scaffold. Core state, navigation, timeline extraction, profile discovery, profile timelines, post, reply, like, community research, structured extraction, community metadata extraction, autonomous topic/community research flows, and recovery flows are implemented. Community-specific posting still needs a deeper X-specific fix path.
+Early, but already one of the more capable SurfAgent adapters.
+
+## Related repos
+
+- [surfagent](https://github.com/surfagentapp/surfagent)
+- [surfagent-mcp](https://github.com/surfagentapp/surfagent/tree/main/surfagent-mcp)
+- [surfagent-docs](https://github.com/surfagentapp/surfagent-docs)
+- [surfagent-skills](https://github.com/surfagentapp/surfagent-skills)
 
 ## License
 
