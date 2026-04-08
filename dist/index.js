@@ -20873,6 +20873,15 @@ var DAEMON_URL = process.env.SURFAGENT_DAEMON_URL ?? "http://127.0.0.1:7201";
 var TOKEN_PATH = (0, import_node_path.join)((0, import_node_os.homedir)(), ".surfagent", "daemon-token.txt");
 var X_URL_RE = /https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i;
 var cachedToken;
+async function readDaemonError(path2, res) {
+  const text = await res.text();
+  if (res.status === 401) {
+    throw new Error(
+      `${path2} failed (HTTP 401): Unauthorized. Check SURFAGENT_AUTH_TOKEN or ~/.surfagent/daemon-token.txt.`
+    );
+  }
+  throw new Error(`${path2} failed (HTTP ${res.status}): ${text}`);
+}
 function getAuthToken() {
   if (cachedToken !== void 0) return cachedToken;
   const envToken = process.env.SURFAGENT_AUTH_TOKEN?.trim();
@@ -20903,10 +20912,7 @@ async function daemonRequest(path2, init, timeoutMs = 15e3) {
     headers: { ...headers(), ...init.headers ?? {} },
     signal: AbortSignal.timeout(timeoutMs)
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${path2} failed (HTTP ${res.status}): ${text}`);
-  }
+  if (!res.ok) await readDaemonError(path2, res);
   return await res.json();
 }
 async function listTabs() {

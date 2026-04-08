@@ -8,6 +8,16 @@ const X_URL_RE = /https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i;
 
 let cachedToken: string | null | undefined;
 
+async function readDaemonError(path: string, res: Response): Promise<never> {
+  const text = await res.text();
+  if (res.status === 401) {
+    throw new Error(
+      `${path} failed (HTTP 401): Unauthorized. Check SURFAGENT_AUTH_TOKEN or ~/.surfagent/daemon-token.txt.`,
+    );
+  }
+  throw new Error(`${path} failed (HTTP ${res.status}): ${text}`);
+}
+
 function getAuthToken(): string | null {
   if (cachedToken !== undefined) return cachedToken;
 
@@ -45,10 +55,7 @@ async function daemonRequest<T>(path: string, init: RequestInit, timeoutMs = 15_
     signal: AbortSignal.timeout(timeoutMs),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${path} failed (HTTP ${res.status}): ${text}`);
-  }
+  if (!res.ok) await readDaemonError(path, res);
 
   return (await res.json()) as T;
 }
