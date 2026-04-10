@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../types.js";
 import { asObject, asOptionalString, asString, textResult } from "../types.js";
-import { runEngagePostTask, runQuotePostTask } from "../task-runner.js";
+import { runCommunityPostTask, runEngagePostTask, runFollowProfileTask, runQuotePostTask, runReplyPostTask, runSwitchAccountAndActTask } from "../task-runner.js";
 import { createPost, followProfile, getComposerState, likePost, navigateX, replyToPost, repostPost, verifyTextVisible } from "../x.js";
 
 function resolvePostUrl(input: Record<string, unknown>): string {
@@ -159,6 +159,97 @@ export const actionTools: ToolDefinition[] = [
       const url = asString(input.url, "url");
       const text = asString(input.text, "text");
       return textResult(JSON.stringify(await runQuotePostTask({ account, url, text, like: input.like === false ? false : true }), null, 2));
+    },
+  },
+  {
+    name: "x_reply_post_task",
+    description: "Run a deterministic reply-post task with account switching, screenshots, and post-surface verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full post URL." },
+        text: { type: "string", description: "Reply text to publish." },
+        like: { type: "boolean", description: "Like the target post first. Defaults to false." },
+      },
+      required: ["account", "url", "text"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_reply_post_task arguments");
+      const account = asString(input.account, "account");
+      const url = asString(input.url, "url");
+      const text = asString(input.text, "text");
+      return textResult(JSON.stringify(await runReplyPostTask({ account, url, text, like: input.like === true }), null, 2));
+    },
+  },
+  {
+    name: "x_follow_profile_task",
+    description: "Run a deterministic follow-profile task with account switching, screenshots, and profile-state verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        username: { type: "string", description: "Profile username to follow, with or without @." },
+      },
+      required: ["account", "username"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_follow_profile_task arguments");
+      const account = asString(input.account, "account");
+      const username = asString(input.username, "username");
+      return textResult(JSON.stringify(await runFollowProfileTask({ account, username }), null, 2));
+    },
+  },
+  {
+    name: "x_community_post_task",
+    description: "Run a deterministic community-post task with membership check, screenshots, composer recovery, and feed verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full X community URL." },
+        text: { type: "string", description: "Community post text." },
+        join: { type: "boolean", description: "Join the community first when needed. Defaults to true." },
+      },
+      required: ["account", "url", "text"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_community_post_task arguments");
+      const account = asString(input.account, "account");
+      const url = asString(input.url, "url");
+      const text = asString(input.text, "text");
+      return textResult(JSON.stringify(await runCommunityPostTask({ account, url, text, join: input.join === false ? false : true }), null, 2));
+    },
+  },
+  {
+    name: "x_switch_account_and_act_task",
+    description: "Run a deterministic account switch followed by a focused action like open-home, open-url, or follow-profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        action: { type: "string", description: "One of: open-home, open-url, follow-profile." },
+        url: { type: "string", description: "Required when action=open-url." },
+        username: { type: "string", description: "Required when action=follow-profile." },
+      },
+      required: ["account", "action"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_switch_account_and_act_task arguments");
+      const account = asString(input.account, "account");
+      const action = asString(input.action, "action") as "open-home" | "open-url" | "follow-profile";
+      const url = asOptionalString(input.url)?.trim();
+      const username = asOptionalString(input.username)?.trim();
+      return textResult(JSON.stringify(await runSwitchAccountAndActTask({
+        account,
+        action,
+        ...(url ? { url } : {}),
+        ...(username ? { username } : {}),
+      }), null, 2));
     },
   },
   {
