@@ -20863,6 +20863,17 @@ async function typeInto(selector, text, tabId) {
   );
   if (!data.ok) throw new Error(data.error ?? "Type failed.");
 }
+async function clickSelector(selector, tabId) {
+  const data = await daemonRequest(
+    "/browser/click",
+    {
+      method: "POST",
+      body: JSON.stringify(tabId ? { selector, tabId } : { selector })
+    },
+    2e4
+  );
+  if (!data.ok) throw new Error(data.error ?? `Click failed for ${selector}.`);
+}
 async function pressKey(key, tabId) {
   const data = await daemonRequest(
     "/browser/press-key",
@@ -22457,6 +22468,266 @@ var timelineTools = [
   }
 ];
 
+// src/task-runner.ts
+var import_promises = require("node:fs/promises");
+var import_node_path2 = require("node:path");
+var import_node_os2 = require("node:os");
+var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "surfagent-x-runs");
+function isoNow() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function slug(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
+}
+function cleanBase64Image(input) {
+  const value = input.trim();
+  const comma = value.indexOf(",");
+  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
+}
+function extractHandle(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(/@([A-Za-z0-9_]{1,15})/);
+  const handle = match?.[1];
+  return handle ? handle.toLowerCase() : null;
+}
+async function ensureRunDir(runId) {
+  const dir = (0, import_node_path2.join)(RUN_ROOT, runId);
+  await (0, import_promises.mkdir)(dir, { recursive: true });
+  return dir;
+}
+async function writeRunFile(runId, filename, content, encoding) {
+  const dir = await ensureRunDir(runId);
+  const fullPath = (0, import_node_path2.join)(dir, filename);
+  if (typeof content === "string") {
+    await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
+  } else {
+    await (0, import_promises.writeFile)(fullPath, content);
+  }
+  return fullPath;
+}
+async function captureRunScreenshot(run, tabId, label) {
+  const image = await screenshot(tabId);
+  const payload = cleanBase64Image(image);
+  const safeLabel = slug(label);
+  const path2 = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
+  const artifact = { label, path: path2, takenAt: isoNow() };
+  run.screenshots.push(artifact);
+  return artifact;
+}
+async function overwriteRunManifest(run) {
+  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+}
+async function withStep(run, name, fn) {
+  const step = { name, status: "started", startedAt: isoNow() };
+  run.steps.push(step);
+  await overwriteRunManifest(run);
+  try {
+    const result = await fn();
+    step.status = "completed";
+    step.finishedAt = isoNow();
+    step.details = result;
+    await overwriteRunManifest(run);
+    return result;
+  } catch (error2) {
+    step.status = "failed";
+    step.finishedAt = isoNow();
+    step.details = error2 instanceof Error ? error2.message : String(error2);
+    run.ok = false;
+    run.error = error2 instanceof Error ? error2.message : String(error2);
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+async function ensureHomeAndSwitch(account, run) {
+  const homeTab = await navigateX("/home");
+  await waitForXReady(homeTab.id, { pageKind: "home", pathIncludes: "/home" });
+  await captureRunScreenshot(run, homeTab.id, "home-before-switch");
+  const result = await switchXAccount(account, homeTab.id);
+  await captureRunScreenshot(run, homeTab.id, "home-after-switch");
+  const state = await getXState(homeTab.id);
+  const activeHandle = extractHandle(state.activeAccount);
+  return { tabId: homeTab.id, state, activeHandle };
+}
+async function tagAndClick(tabId, tagId, expression, label) {
+  const tagged = await evaluate(expression, tabId);
+  if (tagged.ok !== true) {
+    throw new Error(`${label} failed during tagging. Diagnostics: ${JSON.stringify(tagged)}`);
+  }
+  await clickSelector(`#${tagId}`, tabId);
+  return tagged;
+}
+async function waitForComposer(tabId) {
+  const deadline = Date.now() + 12e3;
+  while (Date.now() < deadline) {
+    const state = await getComposerState(tabId);
+    if (state.present) return state;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error("Timed out waiting for the X composer to appear.");
+}
+async function fillComposerWithRecovery(text, tabId, run, mode) {
+  await typeInto('[data-testid="tweetTextarea_0"]', text, tabId);
+  let state = await getComposerState(tabId);
+  await captureRunScreenshot(run, tabId, `${mode}-composer-after-fill`);
+  if (state.present && state.hasText && !state.buttonEnabled && !state.charLimitErrorVisible) {
+    await pressKey("Control+A", tabId).catch(() => void 0);
+    await pressKey("Backspace", tabId).catch(() => void 0);
+    await typeInto('[data-testid="tweetTextarea_0"]', text, tabId);
+    state = await getComposerState(tabId);
+    await captureRunScreenshot(run, tabId, `${mode}-composer-after-recovery`);
+  }
+  if (!state.present || !state.hasText) {
+    throw new Error(`Composer did not retain typed text. Diagnostics: ${JSON.stringify(state)}`);
+  }
+  if (!state.buttonEnabled) {
+    throw new Error(`Composer text is present but submit is disabled. Diagnostics: ${JSON.stringify(state)}`);
+  }
+  return state;
+}
+async function verifyQuoteVisible(handle, text, tabId, run) {
+  if (!handle) {
+    throw new Error("Could not determine active handle for quote verification.");
+  }
+  await navigateX(`/${handle}`, tabId);
+  await waitForXReady(tabId, { pageKind: "profile" });
+  const deadline = Date.now() + 2e4;
+  while (Date.now() < deadline) {
+    const verify = await verifyTextVisible(text, tabId, "body");
+    if (verify.visible === true) {
+      await captureRunScreenshot(run, tabId, "quote-verified-on-profile");
+      return verify;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Quote text did not become visible on @${handle}'s profile.`);
+}
+async function runEngagePostTask(options) {
+  const run = {
+    ok: true,
+    task: "engage-post",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-engage-post`,
+    account: options.account,
+    url: options.url,
+    steps: [],
+    screenshots: []
+  };
+  try {
+    const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
+    await withStep(run, "open-target-post", async () => {
+      await navigateX(options.url, switched.tabId);
+      await waitForXReady(switched.tabId, { pageKind: "post" });
+      await captureRunScreenshot(run, switched.tabId, "target-post-before-actions");
+      return await getXState(switched.tabId);
+    });
+    let likeResult = { skipped: true };
+    if (options.like !== false) {
+      likeResult = await withStep(run, "like-post", async () => likePost(options.url, switched.tabId));
+    }
+    let repostResult = { skipped: true };
+    if (options.repost === true) {
+      repostResult = await withStep(run, "repost-post", async () => repostPost(options.url, switched.tabId));
+    }
+    const finalState = await withStep(run, "verify-post-state", async () => {
+      await navigateX(options.url, switched.tabId);
+      await waitForXReady(switched.tabId, { pageKind: "post" });
+      await captureRunScreenshot(run, switched.tabId, "target-post-after-actions");
+      return await getXState(switched.tabId);
+    });
+    run.state = { switched, likeResult, repostResult, finalState };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    run.error = error2 instanceof Error ? error2.message : String(error2);
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+async function runQuotePostTask(options) {
+  const run = {
+    ok: true,
+    task: "quote-post",
+    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-quote-post`,
+    account: options.account,
+    url: options.url,
+    quoteText: options.text,
+    steps: [],
+    screenshots: []
+  };
+  try {
+    const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
+    await withStep(run, "open-target-post", async () => {
+      await navigateX(options.url, switched.tabId);
+      await waitForXReady(switched.tabId, { pageKind: "post" });
+      await captureRunScreenshot(run, switched.tabId, "quote-target-post-before-actions");
+      return await getXState(switched.tabId);
+    });
+    let likeResult = { skipped: true };
+    if (options.like !== false) {
+      likeResult = await withStep(run, "like-post", async () => likePost(options.url, switched.tabId));
+    }
+    const openQuote = await withStep(run, "open-quote-composer", async () => {
+      const taggedRetweet = await tagAndClick(
+        switched.tabId,
+        "surfagent-x-retweet-target",
+        String.raw`(() => {
+          const article = [...document.querySelectorAll('article[data-testid="tweet"]')].find((a) => (a.innerText || a.textContent || '').includes('clawhub.ai')) || document.querySelector('article[data-testid="tweet"]');
+          const btn = article?.querySelector('[data-testid="retweet"], [data-testid="unretweet"]');
+          if (!btn) return { ok: false, error: 'retweet_button_missing' };
+          btn.setAttribute('id', 'surfagent-x-retweet-target');
+          return { ok: true, testid: btn.getAttribute('data-testid'), text: (btn.textContent || '').trim() };
+        })();`,
+        "retweet button"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      const taggedQuote = await tagAndClick(
+        switched.tabId,
+        "surfagent-x-quote-target",
+        String.raw`(() => {
+          const items = [...document.querySelectorAll('[role="menuitem"]')];
+          const quote = items.find((el) => /quote/i.test((el.innerText || el.textContent || '').trim()));
+          if (!quote) return { ok: false, error: 'quote_menu_item_missing', items: items.map((el) => (el.innerText || el.textContent || '').trim()) };
+          quote.setAttribute('id', 'surfagent-x-quote-target');
+          return { ok: true, text: (quote.innerText || quote.textContent || '').trim(), items: items.map((el) => (el.innerText || el.textContent || '').trim()) };
+        })();`,
+        "quote menu item"
+      );
+      await waitForComposer(switched.tabId);
+      await captureRunScreenshot(run, switched.tabId, "quote-composer-open");
+      return { taggedRetweet, taggedQuote };
+    });
+    const composer = await withStep(run, "fill-quote-composer", async () => fillComposerWithRecovery(options.text, switched.tabId, run, "quote"));
+    const submitResult = await withStep(run, "submit-quote", async () => {
+      await captureRunScreenshot(run, switched.tabId, "quote-before-submit");
+      const taggedSubmit = await evaluate(String.raw`(() => {
+        const btn = [...document.querySelectorAll('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]')].find((el) => {
+          const text = (el.textContent || '').trim();
+          return text === 'Post' && !el.disabled;
+        });
+        if (!btn) return { ok: false, error: 'quote_submit_missing' };
+        btn.setAttribute('id', 'surfagent-x-quote-submit');
+        return { ok: true, text: (btn.textContent || '').trim(), testid: btn.getAttribute('data-testid') };
+      })();`, switched.tabId);
+      if (taggedSubmit.ok !== true) {
+        throw new Error(`Could not tag quote submit button. Diagnostics: ${JSON.stringify(taggedSubmit)}`);
+      }
+      await clickSelector("#surfagent-x-quote-submit", switched.tabId);
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await captureRunScreenshot(run, switched.tabId, "quote-after-submit");
+      return taggedSubmit;
+    });
+    const verify = await withStep(run, "verify-quote-visible", async () => verifyQuoteVisible(switched.activeHandle, options.text, switched.tabId, run));
+    run.state = { switched, likeResult, openQuote, composer, submitResult, verify };
+    await overwriteRunManifest(run);
+    return run;
+  } catch (error2) {
+    run.ok = false;
+    run.error = error2 instanceof Error ? error2.message : String(error2);
+    await overwriteRunManifest(run);
+    throw error2;
+  }
+}
+
 // src/tools/actions.ts
 function resolvePostUrl(input) {
   const url2 = asOptionalString(input.url)?.trim();
@@ -22573,6 +22844,49 @@ var actionTools = [
     }
   },
   {
+    name: "x_engage_post_task",
+    description: "Run a deterministic engage-post task with account switch, screenshots, optional like/repost actions, and a persisted run journal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full post URL." },
+        like: { type: "boolean", description: "Like the post. Defaults to true." },
+        repost: { type: "boolean", description: "Repost the post. Defaults to false." }
+      },
+      required: ["account", "url"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_engage_post_task arguments");
+      const account = asString(input.account, "account");
+      const url2 = asString(input.url, "url");
+      return textResult(JSON.stringify(await runEngagePostTask({ account, url: url2, like: input.like === false ? false : true, repost: input.repost === true }), null, 2));
+    }
+  },
+  {
+    name: "x_quote_post_task",
+    description: "Run a deterministic quote-post task with screenshots before and after submit, account switching, and profile-level verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full post URL." },
+        text: { type: "string", description: "Quote text to publish." },
+        like: { type: "boolean", description: "Like the target post first. Defaults to true." }
+      },
+      required: ["account", "url", "text"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_quote_post_task arguments");
+      const account = asString(input.account, "account");
+      const url2 = asString(input.url, "url");
+      const text = asString(input.text, "text");
+      return textResult(JSON.stringify(await runQuotePostTask({ account, url: url2, text, like: input.like === false ? false : true }), null, 2));
+    }
+  },
+  {
     name: "x_verify_text_visible",
     description: "Verify that a specific text snippet is visible on X. Scope can target body, article content, or the active composer.",
     inputSchema: {
@@ -22626,14 +22940,14 @@ var actionTools = [
 ];
 
 // src/tools/research.ts
-var import_promises = require("node:fs/promises");
-var import_node_os2 = __toESM(require("node:os"));
-var import_node_path2 = __toESM(require("node:path"));
+var import_promises2 = require("node:fs/promises");
+var import_node_os3 = __toESM(require("node:os"));
+var import_node_path3 = __toESM(require("node:path"));
 function slugify2(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "run";
 }
 function getDefaultOutputDir() {
-  return import_node_path2.default.join(import_node_os2.default.homedir(), ".surfagent", "receipts", "x-research");
+  return import_node_path3.default.join(import_node_os3.default.homedir(), ".surfagent", "receipts", "x-research");
 }
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -22677,15 +22991,15 @@ function buildRunSummaryMarkdown(kind, label, payload) {
 async function maybePersistRun(kind, label, payload, options) {
   if (!options.save) return null;
   const baseDir = options.outputDir?.trim() || getDefaultOutputDir();
-  await (0, import_promises.mkdir)(baseDir, { recursive: true });
+  await (0, import_promises2.mkdir)(baseDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const runSlug = `${timestamp}-${kind}-${slugify2(label)}`;
-  const runDir = import_node_path2.default.join(baseDir, runSlug);
-  await (0, import_promises.mkdir)(runDir, { recursive: true });
+  const runDir = import_node_path3.default.join(baseDir, runSlug);
+  await (0, import_promises2.mkdir)(runDir, { recursive: true });
   const files = [];
   const writeJson = async (name, value) => {
-    const filePath = import_node_path2.default.join(runDir, name);
-    await (0, import_promises.writeFile)(filePath, JSON.stringify(value, null, 2), "utf8");
+    const filePath = import_node_path3.default.join(runDir, name);
+    await (0, import_promises2.writeFile)(filePath, JSON.stringify(value, null, 2), "utf8");
     files.push(name);
   };
   const payloadRecord = asRecord(payload) ?? { value: payload };
@@ -22707,12 +23021,12 @@ async function maybePersistRun(kind, label, payload, options) {
     }
   }
   const markdownName = "SUMMARY.md";
-  await (0, import_promises.writeFile)(import_node_path2.default.join(runDir, markdownName), buildRunSummaryMarkdown(kind, label, payloadRecord), "utf8");
+  await (0, import_promises2.writeFile)(import_node_path3.default.join(runDir, markdownName), buildRunSummaryMarkdown(kind, label, payloadRecord), "utf8");
   files.push(markdownName);
   return {
     saved: true,
     dir: runDir,
-    bundlePath: import_node_path2.default.join(runDir, "bundle.json"),
+    bundlePath: import_node_path3.default.join(runDir, "bundle.json"),
     files
   };
 }

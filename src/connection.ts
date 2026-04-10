@@ -112,6 +112,18 @@ export async function typeInto(selector: string, text: string, tabId?: string): 
   if (!data.ok) throw new Error(data.error ?? "Type failed.");
 }
 
+export async function clickSelector(selector: string, tabId?: string): Promise<void> {
+  const data = await daemonRequest<{ ok: boolean; error?: string }>(
+    "/browser/click",
+    {
+      method: "POST",
+      body: JSON.stringify(tabId ? { selector, tabId } : { selector }),
+    },
+    20_000,
+  );
+  if (!data.ok) throw new Error(data.error ?? `Click failed for ${selector}.`);
+}
+
 export async function pressKey(key: string, tabId?: string): Promise<void> {
   const data = await daemonRequest<{ ok: boolean; error?: string }>(
     "/browser/press-key",

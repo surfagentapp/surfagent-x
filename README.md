@@ -2,7 +2,7 @@
 
 X adapter for [SurfAgent](https://surfagent.app).
 
-This adapter gives AI agents X-native verbs for navigation, extraction, posting, replies, likes, recovery, and deeper research workflows.
+This adapter gives AI agents X-native verbs for navigation, extraction, posting, replies, likes, reposts, proof-first task execution, recovery, and deeper research workflows.
 
 ## What this adapter is for
 
@@ -67,6 +67,10 @@ It also now bakes in some hard-won X lessons:
 - `x_create_post`
 - `x_reply_to_post`
 - `x_like_post`
+- `x_repost_post`
+- `x_follow_profile`
+- `x_engage_post_task`
+- `x_quote_post_task`
 - `x_verify_text_visible`
 - `x_recover`
 
@@ -107,6 +111,18 @@ Run this adapter alongside the base SurfAgent MCP.
 }
 ```
 
+### CLI task runner
+
+For repeatable X actions, prefer the built-in deterministic task runner over a live improvised browser loop.
+
+```bash
+surfagent-x task engage-post --account reggiesurfagent --url https://x.com/surfagentapp/status/123 --repost
+surfagent-x task quote-post --account solvingdilemma --url https://x.com/surfagentapp/status/123 --text "Real browser-native agents need proof, not vibes."
+```
+
+Each task run writes a journal plus screenshots under:
+- `${SURFAGENT_RUN_DIR:-$TMPDIR/surfagent-x-runs}`
+
 If you are new to SurfAgent, start here first:
 - <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/start-here.md>
 - <https://github.com/surfagentapp/surfagent-docs/blob/main/docs/mcp-server.md>
@@ -122,6 +138,7 @@ If you are new to SurfAgent, start here first:
 
 - `SURFAGENT_DAEMON_URL` default: `http://127.0.0.1:7201`
 - `SURFAGENT_AUTH_TOKEN` optional override, otherwise auto-detected
+- `SURFAGENT_RUN_DIR` optional override for task-runner journals and screenshots
 
 ## Status
 

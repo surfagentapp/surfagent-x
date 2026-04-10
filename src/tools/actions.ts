@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../types.js";
 import { asObject, asOptionalString, asString, textResult } from "../types.js";
+import { runEngagePostTask, runQuotePostTask } from "../task-runner.js";
 import { createPost, followProfile, getComposerState, likePost, navigateX, replyToPost, repostPost, verifyTextVisible } from "../x.js";
 
 function resolvePostUrl(input: Record<string, unknown>): string {
@@ -115,6 +116,49 @@ export const actionTools: ToolDefinition[] = [
       const username = asString(input.username, "username");
       const tabId = asOptionalString(input.tabId)?.trim();
       return textResult(JSON.stringify(await followProfile(username, tabId), null, 2));
+    },
+  },
+  {
+    name: "x_engage_post_task",
+    description: "Run a deterministic engage-post task with account switch, screenshots, optional like/repost actions, and a persisted run journal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full post URL." },
+        like: { type: "boolean", description: "Like the post. Defaults to true." },
+        repost: { type: "boolean", description: "Repost the post. Defaults to false." },
+      },
+      required: ["account", "url"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_engage_post_task arguments");
+      const account = asString(input.account, "account");
+      const url = asString(input.url, "url");
+      return textResult(JSON.stringify(await runEngagePostTask({ account, url, like: input.like === false ? false : true, repost: input.repost === true }), null, 2));
+    },
+  },
+  {
+    name: "x_quote_post_task",
+    description: "Run a deterministic quote-post task with screenshots before and after submit, account switching, and profile-level verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target X account handle or visible switcher label." },
+        url: { type: "string", description: "Full post URL." },
+        text: { type: "string", description: "Quote text to publish." },
+        like: { type: "boolean", description: "Like the target post first. Defaults to true." },
+      },
+      required: ["account", "url", "text"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_quote_post_task arguments");
+      const account = asString(input.account, "account");
+      const url = asString(input.url, "url");
+      const text = asString(input.text, "text");
+      return textResult(JSON.stringify(await runQuotePostTask({ account, url, text, like: input.like === false ? false : true }), null, 2));
     },
   },
   {
