@@ -20899,6 +20899,22 @@ async function getXState(tabId) {
   const raw = await evaluate(buildStateExpression(), tabId);
   return parseJsonResult(raw);
 }
+async function getXAccounts(tabId) {
+  const tab = tabId ? { id: tabId } : await requireXTab();
+  const raw = await evaluate(buildAccountSwitcherExpression(false), tab.id);
+  return parseJsonResult(raw);
+}
+async function switchXAccount(account, tabId) {
+  const tab = tabId ? { id: tabId } : await requireXTab();
+  const raw = await evaluate(buildAccountSwitcherExpression(true, account), tab.id);
+  const result = parseJsonResult(raw);
+  if (result.ok !== true) {
+    throw new Error(`Could not switch X account to ${account}.`);
+  }
+  await sleep(2500);
+  const state = await getXState(tab.id);
+  return { ...result, state };
+}
 async function waitForXReady(tabId, expected = {}) {
   const deadline = Date.now() + DEFAULT_WAIT_TIMEOUT_MS;
   const requiredStablePasses = expected.pageKind === "search" ? 1 : 2;
@@ -21005,7 +21021,7 @@ async function createPost(text, tabId) {
     throw new Error("Composer did not retain the typed text. X likely ignored the input.");
   }
   if (!beforeSubmit.buttonEnabled) {
-    throw new Error("Composer has text, but the Post button is still disabled.");
+    throw new Error(`Composer has text, but the Post button is still disabled. Diagnostics: ${JSON.stringify(beforeSubmit)}`);
   }
   const clickResult = await clickButtonByTestId(["tweetButtonInline", "tweetButton"], tab.id, ["Post"]);
   if (clickResult.ok !== true) {
@@ -21039,7 +21055,7 @@ async function replyToPost(postUrl, text, tabId) {
     throw new Error("Reply composer did not retain the typed text.");
   }
   if (!composer.buttonEnabled) {
-    throw new Error("Reply composer is open, but the Reply button is still disabled.");
+    throw new Error(`Reply composer is open, but the Reply button is still disabled. Diagnostics: ${JSON.stringify(composer)}`);
   }
   const clickResult = await clickButtonByTestId(["tweetButton", "tweetButtonInline"], tab.id, ["Reply", "Post"]);
   if (clickResult.ok !== true) {
@@ -21063,10 +21079,55 @@ async function likePost(postUrl, tabId) {
   const verify = await evaluate(buildTargetedActionExpression(postId, "like_state", false), tab.id);
   return { ...result, verify: parseJsonResult(verify), postId, tabId: tab.id };
 }
+async function repostPost(postUrl, tabId) {
+  const postId = parsePostIdFromUrl(postUrl);
+  const tab = await navigateX(postUrl, tabId);
+  await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
+  await waitForPostAction(tab.id, postId, "repost");
+  const raw = await evaluate(buildTargetedActionExpression(postId, "repost", true), tab.id);
+  const result = parseJsonResult(raw);
+  if (result.ok !== true) {
+    throw new Error("Repost button was not found on the target post.");
+  }
+  await sleep(800);
+  const confirm = await evaluate(buildRepostConfirmExpression(), tab.id);
+  const confirmResult = parseJsonResult(confirm);
+  if (confirmResult.ok !== true) {
+    throw new Error(`Repost confirm failed. Diagnostics: ${JSON.stringify(confirmResult)}`);
+  }
+  await sleep(1200);
+  const verify = await evaluate(buildTargetedActionExpression(postId, "repost_state", false), tab.id);
+  return { ...result, confirmResult, verify: parseJsonResult(verify), postId, tabId: tab.id };
+}
+async function followProfile(username, tabId) {
+  const cleanUsername = username.replace(/^@+/, "");
+  const tab = await navigateX(`/${cleanUsername}`, tabId);
+  await waitForXReady(tab.id, { pageKind: "profile" });
+  await sleep(1200);
+  const before = await evaluate(buildFollowProfileExpression(cleanUsername, false), tab.id);
+  const beforeResult = parseJsonResult(before);
+  if (beforeResult.ok !== true) {
+    throw new Error(`Could not inspect follow state for @${cleanUsername}. Diagnostics: ${JSON.stringify(beforeResult)}`);
+  }
+  const state = String(beforeResult.state ?? "unknown");
+  if (["following", "requested", "self"].includes(state)) {
+    return { username: cleanUsername, before: beforeResult, action: "noop", after: beforeResult, tabId: tab.id };
+  }
+  const click = await evaluate(buildFollowProfileExpression(cleanUsername, true), tab.id);
+  const clickResult = parseJsonResult(click);
+  if (clickResult.ok !== true) {
+    throw new Error(`Could not click follow for @${cleanUsername}. Diagnostics: ${JSON.stringify(clickResult)}`);
+  }
+  await sleep(1500);
+  const after = await evaluate(buildFollowProfileExpression(cleanUsername, false), tab.id);
+  return { username: cleanUsername, before: beforeResult, action: "follow", clickResult, after: parseJsonResult(after), tabId: tab.id };
+}
 async function getComposerState(tabId) {
   const raw = await evaluate(String.raw`(() => {
     const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
     const text = textarea ? ((textarea.textContent || textarea.innerText || '').trim()) : '';
+    const bodyText = document.body?.innerText || '';
+    const limitMatch = bodyText.match(/You have exceeded the character limit by\s+(\d+)/i);
     const buttons = [...document.querySelectorAll('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]')];
     const candidates = buttons.map(btn => ({
       text: (btn.textContent || '').trim(),
@@ -21080,6 +21141,8 @@ async function getComposerState(tabId) {
       text: text || null,
       textLength: text.length,
       hasText: text.length > 0,
+      charLimitExceededBy: limitMatch ? Number(limitMatch[1]) : null,
+      charLimitErrorVisible: !!limitMatch,
       buttonText: target ? target.text : null,
       buttonEnabled: target ? !target.disabled : false,
       buttonTestId: target ? target.testid : null,
@@ -21589,6 +21652,26 @@ function buildTargetedActionExpression(postId, action, click = false) {
       return JSON.stringify({ ok: true, action: 'like', postId: targetPostId, before, beforeTestId });
     }
 
+    if (${JSON.stringify(action)} === 'repost') {
+      const btn = article.querySelector('[data-testid="retweet"], [data-testid="unretweet"]');
+      if (!btn) return JSON.stringify({ ok: false, error: 'repost_button_not_found', postId: targetPostId });
+      const before = btn.getAttribute('aria-label') || null;
+      const beforeTestId = btn.getAttribute('data-testid') || null;
+      if (${click ? "true" : "false"}) clickEl(btn);
+      return JSON.stringify({ ok: true, action: 'repost', postId: targetPostId, before, beforeTestId });
+    }
+
+    if (${JSON.stringify(action)} === 'repost_state') {
+      const btn = article.querySelector('[data-testid="retweet"], [data-testid="unretweet"]');
+      return JSON.stringify({
+        ok: !!btn,
+        action: 'repost_state',
+        postId: targetPostId,
+        ariaLabel: btn ? (btn.getAttribute('aria-label') || null) : null,
+        testId: btn ? (btn.getAttribute('data-testid') || null) : null,
+      });
+    }
+
     const btn = article.querySelector('[data-testid="like"], [data-testid="unlike"]');
     return JSON.stringify({
       ok: !!btn,
@@ -21597,6 +21680,112 @@ function buildTargetedActionExpression(postId, action, click = false) {
       ariaLabel: btn ? (btn.getAttribute('aria-label') || null) : null,
       testId: btn ? (btn.getAttribute('data-testid') || null) : null,
     });
+  })();`;
+}
+function buildAccountSwitcherExpression(click = false, requestedAccount = "") {
+  return String.raw`(() => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const clickEl = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      ['pointerdown','mousedown','pointerup','mouseup','click'].forEach((type) => {
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0, buttons: type.includes('down') ? 1 : 0, pointerId: 1, pointerType: 'mouse' }));
+      });
+      return true;
+    };
+    const requested = ${JSON.stringify(requestedAccount)}.replace(/^@+/, '').toLowerCase();
+    const switcher = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+    if (!switcher) return JSON.stringify({ ok: false, error: 'account_switcher_not_found' });
+    const activeText = clean(switcher.textContent || '');
+    const activeMatch = activeText.match(/@([A-Za-z0-9_]{1,15})/);
+    const activeHandle = activeMatch ? activeMatch[1].toLowerCase() : null;
+    if (!${click ? "true" : "false"}) {
+      const menuButtons = [...document.querySelectorAll('[role="menuitem"], [data-testid="AccountSwitcher_Account_Button"]')].map(el => clean(el.textContent || '')).filter(Boolean);
+      return JSON.stringify({ ok: true, activeText, activeHandle, menuButtons });
+    }
+    if (!requested) return JSON.stringify({ ok: false, error: 'requested_account_missing', activeText, activeHandle });
+    if (activeHandle === requested) {
+      return JSON.stringify({ ok: true, action: 'already_active', requested, activeHandle });
+    }
+    clickEl(switcher);
+    const all = [...document.querySelectorAll('[role="menuitem"], [data-testid="AccountSwitcher_Account_Button"], [data-testid="UserCell"]')];
+    const target = all.find(el => {
+      const text = clean(el.textContent || '');
+      return text.toLowerCase().includes('@' + requested) || text.toLowerCase().includes(requested);
+    }) || null;
+    if (!target) {
+      return JSON.stringify({ ok: false, error: 'account_option_not_found', requested, activeHandle, options: all.map(el => clean(el.textContent || '')).filter(Boolean).slice(0, 20) });
+    }
+    clickEl(target);
+    return JSON.stringify({ ok: true, action: 'clicked', requested, activeHandle, targetText: clean(target.textContent || '') });
+  })();`;
+}
+function buildFollowProfileExpression(username, click = false) {
+  return String.raw`(() => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const clickEl = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      ['pointerdown','mousedown','pointerup','mouseup','click'].forEach((type) => {
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0, buttons: type.includes('down') ? 1 : 0, pointerId: 1, pointerType: 'mouse' }));
+      });
+      return true;
+    };
+    const handle = ${JSON.stringify(username)}.replace(/^@+/, '').toLowerCase();
+    const activeHandle = clean(document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')?.textContent || '').match(/@([A-Za-z0-9_]{1,15})/)?.[1]?.toLowerCase() || null;
+    const candidates = [...document.querySelectorAll('[role="button"], button, a')].map(el => ({
+      el,
+      text: clean(el.innerText || el.getAttribute('aria-label') || ''),
+      testid: el.getAttribute('data-testid') || ''
+    }));
+    const followBtn = candidates.find(item => /(^|-)follow$/.test(item.testid) || /^(follow|follow back|following|requested|edit profile)$/i.test(item.text)) || null;
+    if (!followBtn) {
+      return JSON.stringify({ ok: false, error: 'follow_button_not_found', handle, activeHandle });
+    }
+    const label = followBtn.text;
+    const state = /^following$/i.test(label) || /-unfollow$/.test(followBtn.testid)
+      ? 'following'
+      : /^requested$/i.test(label)
+        ? 'requested'
+        : /^edit profile$/i.test(label)
+          ? 'self'
+          : 'not_following';
+    if (!${click ? "true" : "false"}) {
+      return JSON.stringify({ ok: true, handle, activeHandle, state, label, testid: followBtn.testid });
+    }
+    if (state !== 'not_following') {
+      return JSON.stringify({ ok: true, handle, activeHandle, state, label, testid: followBtn.testid, action: 'noop' });
+    }
+    clickEl(followBtn.el);
+    return JSON.stringify({ ok: true, handle, activeHandle, state, label, testid: followBtn.testid, action: 'clicked' });
+  })();`;
+}
+function buildRepostConfirmExpression() {
+  return String.raw`(() => {
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const clickEl = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      ['pointerdown','mousedown','pointerup','mouseup','click'].forEach((type) => {
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0, buttons: type.includes('down') ? 1 : 0, pointerId: 1, pointerType: 'mouse' }));
+      });
+      return true;
+    };
+    const candidates = [...document.querySelectorAll('[role="menuitem"], [role="button"], button')].map(el => ({
+      el,
+      text: clean(el.innerText || el.getAttribute('aria-label') || ''),
+      testid: el.getAttribute('data-testid') || ''
+    }));
+    const target = candidates.find(item => /^(repost|retweet)$/i.test(item.text) || /retweetConfirm/i.test(item.testid)) || null;
+    if (!target) return JSON.stringify({ ok: false, error: 'retweet_confirm_not_found', candidates: candidates.slice(0, 20).map(item => ({ text: item.text, testid: item.testid })) });
+    clickEl(target.el);
+    return JSON.stringify({ ok: true, text: target.text, testid: target.testid });
   })();`;
 }
 async function waitForPostAction(tabId, postId, action) {
@@ -21679,6 +21868,29 @@ var healthTools = [
 
 // src/tools/navigation.ts
 var navigationTools = [
+  {
+    name: "x_get_accounts",
+    description: "Inspect the active X account and any account-switcher entries currently visible.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => textResult(JSON.stringify(await getXAccounts(), null, 2))
+  },
+  {
+    name: "x_switch_account",
+    description: "Switch X accounts through the in-session account switcher and verify the resulting active account state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target handle or account label, with or without @." }
+      },
+      required: ["account"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_switch_account arguments");
+      const account = asString(input.account, "account");
+      return textResult(JSON.stringify(await switchXAccount(account), null, 2));
+    }
+  },
   {
     name: "x_get_state",
     description: "Get structured X page state for the current tab: route, page kind, selected tabs, composer state, and account info.",
@@ -22065,6 +22277,45 @@ var actionTools = [
       const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
       return textResult(JSON.stringify(await likePost(postUrl, tabId), null, 2));
+    }
+  },
+  {
+    name: "x_repost_post",
+    description: "Repost a specific X post and verify the resulting repost state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full post URL." },
+        username: { type: "string", description: "Post author username if url is omitted." },
+        postId: { type: "string", description: "Status ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." }
+      },
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_repost_post arguments");
+      const tabId = asOptionalString(input.tabId)?.trim();
+      const postUrl = resolvePostUrl(input);
+      return textResult(JSON.stringify(await repostPost(postUrl, tabId), null, 2));
+    }
+  },
+  {
+    name: "x_follow_profile",
+    description: "Follow an X profile and verify the resulting follow state from the active account.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Profile username, with or without @." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." }
+      },
+      required: ["username"],
+      additionalProperties: false
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_follow_profile arguments");
+      const username = asString(input.username, "username");
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await followProfile(username, tabId), null, 2));
     }
   },
   {

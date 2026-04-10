@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../types.js";
 import { asObject, asOptionalString, asString, textResult } from "../types.js";
-import { createPost, getComposerState, likePost, navigateX, replyToPost, verifyTextVisible } from "../x.js";
+import { createPost, followProfile, getComposerState, likePost, navigateX, replyToPost, repostPost, verifyTextVisible } from "../x.js";
 
 function resolvePostUrl(input: Record<string, unknown>): string {
   const url = asOptionalString(input.url)?.trim();
@@ -76,6 +76,45 @@ export const actionTools: ToolDefinition[] = [
       const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
       return textResult(JSON.stringify(await likePost(postUrl, tabId), null, 2));
+    },
+  },
+  {
+    name: "x_repost_post",
+    description: "Repost a specific X post and verify the resulting repost state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full post URL." },
+        username: { type: "string", description: "Post author username if url is omitted." },
+        postId: { type: "string", description: "Status ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_repost_post arguments");
+      const tabId = asOptionalString(input.tabId)?.trim();
+      const postUrl = resolvePostUrl(input);
+      return textResult(JSON.stringify(await repostPost(postUrl, tabId), null, 2));
+    },
+  },
+  {
+    name: "x_follow_profile",
+    description: "Follow an X profile and verify the resulting follow state from the active account.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Profile username, with or without @." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." },
+      },
+      required: ["username"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_follow_profile arguments");
+      const username = asString(input.username, "username");
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await followProfile(username, tabId), null, 2));
     },
   },
   {

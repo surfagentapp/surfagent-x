@@ -1,8 +1,31 @@
 import type { ToolDefinition } from "../types.js";
 import { asObject, asOptionalString, asString, textResult } from "../types.js";
-import { navigateX, getXState, openXPath, waitForXReady } from "../x.js";
+import { getXAccounts, getXState, navigateX, openXPath, switchXAccount, waitForXReady } from "../x.js";
 
 export const navigationTools: ToolDefinition[] = [
+  {
+    name: "x_get_accounts",
+    description: "Inspect the active X account and any account-switcher entries currently visible.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => textResult(JSON.stringify(await getXAccounts(), null, 2)),
+  },
+  {
+    name: "x_switch_account",
+    description: "Switch X accounts through the in-session account switcher and verify the resulting active account state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "Target handle or account label, with or without @." },
+      },
+      required: ["account"],
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_switch_account arguments");
+      const account = asString(input.account, "account");
+      return textResult(JSON.stringify(await switchXAccount(account), null, 2));
+    },
+  },
   {
     name: "x_get_state",
     description: "Get structured X page state for the current tab: route, page kind, selected tabs, composer state, and account info.",
