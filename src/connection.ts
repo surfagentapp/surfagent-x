@@ -114,7 +114,7 @@ export async function typeInto(selector: string, text: string, tabId?: string): 
 
 export async function pressKey(key: string, tabId?: string): Promise<void> {
   const data = await daemonRequest<{ ok: boolean; error?: string }>(
-    "/browser/press",
+    "/browser/press-key",
     {
       method: "POST",
       body: JSON.stringify(tabId ? { key, tabId } : { key }),

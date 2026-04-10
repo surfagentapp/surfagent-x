@@ -1,4 +1,4 @@
-import { ensureXTab, evaluate, findXTab, navigateTab, typeInto } from "./connection.js";
+import { ensureXTab, evaluate, findXTab, navigateTab, pressKey, screenshot, typeInto } from "./connection.js";
 
 export type XPageKind =
   | "home"
@@ -17,8 +17,68 @@ export type XReadyExpectation = {
   pageKind?: XPageKind;
 };
 
+export type XStateMapSurface = "home" | "account_switcher" | "composer" | "community" | "post" | "profile";
+
+export type XComposerState = {
+  ok?: boolean;
+  present: boolean;
+  text: string | null;
+  textLength: number;
+  hasText: boolean;
+  charLimitExceededBy: number | null;
+  charLimitErrorVisible: boolean;
+  remainingCharacters: number | null;
+  buttonText: string | null;
+  buttonEnabled: boolean;
+  buttonTestId: string | null;
+  buttonCandidates: Array<{ text: string; disabled: boolean; testid: string | null }>;
+  audienceLabel: string | null;
+  audienceAriaLabel: string | null;
+  trustHierarchy: string[];
+  stateMap: { surface: XStateMapSurface; landmarks: string[]; proof: string[]; traps: string[] };
+};
+
 const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_WAIT_POLL_MS = 300;
+
+const X_STATE_MAP: Record<XStateMapSurface, { surface: XStateMapSurface; landmarks: string[]; proof: string[]; traps: string[] }> = {
+  home: {
+    surface: "home",
+    landmarks: ["left sidebar", "active account switcher button", "primary timeline column", "home composer or compose launcher"],
+    proof: ["sidebar account label matches expected account", "home route is settled", "timeline or composer is visible"],
+    traps: ["stale title while route changed", "sidebar says one account while old content lingers", "compose button visible before page fully settles"],
+  },
+  account_switcher: {
+    surface: "account_switcher",
+    landmarks: ["bottom-left sidebar switcher", "full account rows like UserCell", "Add an existing account", "Manage accounts", "Log out"],
+    proof: ["switcher menu is actually open", "target account row is visibly present", "sidebar account label changes after click"],
+    traps: ["partial extraction hides alternate account rows", "menu text includes current account but not full options", "wrong conclusion from one weak pass"],
+  },
+  composer: {
+    surface: "composer",
+    landmarks: ["tweetTextarea_0", "Post or Reply button", "remaining character counter", "audience selector when relevant"],
+    proof: ["intended text is present", "remaining characters or enabled button confirms accepted input", "composer closes or clears after submit"],
+    traps: ["DOM-inserted text looks present but button stays disabled", "hidden overflow/validation state", "community audience not set correctly"],
+  },
+  community: {
+    surface: "community",
+    landmarks: ["community title", "Join or Joined state", "community tabs", "community audience selector in composer"],
+    proof: ["correct community is open", "membership state is known", "published post appears in community feed under the right account"],
+    traps: ["global composer mistaken for community composer", "joined state not yet settled", "posting from wrong account inside community"],
+  },
+  post: {
+    surface: "post",
+    landmarks: ["target article", "reply/like/repost buttons", "thread context", "post URL"],
+    proof: ["target post URL or id matches", "reply or action control belongs to the intended post", "resulting state is visible on the same surface"],
+    traps: ["hydration delay after opening post", "interacting with nearby post instead of target article"],
+  },
+  profile: {
+    surface: "profile",
+    landmarks: ["username in route", "profile header", "follow state button", "profile timeline"],
+    proof: ["route matches target username", "follow state is visible", "profile content belongs to the expected handle"],
+    traps: ["redirects into recovery or recommendations flow", "self-profile misread as target profile"],
+  },
+};
 
 export async function openXPath(path: string) {
   return ensureXTab(path);
@@ -40,25 +100,61 @@ export async function navigateX(urlOrPath: string, tabId?: string) {
 
 export async function getXState(tabId?: string) {
   const raw = await evaluate<string>(buildStateExpression(), tabId);
-  return parseJsonResult(raw);
+  const state = parseJsonResult(raw) as Record<string, unknown>;
+  const surface = toStateMapSurface(state.pageKind);
+  return {
+    ...state,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: surface ? X_STATE_MAP[surface] : null,
+  };
 }
 
 export async function getXAccounts(tabId?: string) {
   const tab = tabId ? { id: tabId } : await requireXTab();
   const raw = await evaluate<string>(buildAccountSwitcherExpression(false), tab.id);
-  return parseJsonResult(raw);
+  const result = parseJsonResult(raw) as Record<string, unknown>;
+  const needsVisual = result.ok === true && (result.menuOpen !== true || Number(result.optionCount ?? 0) === 0 || result.partialExtractionSuspected === true);
+  return {
+    ...result,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: X_STATE_MAP.account_switcher,
+    visualSnapshot: needsVisual ? await captureVisualSnapshot(tab.id, "account_switcher_ambiguity") : null,
+  };
+}
+
+export async function getXStateMap(surface?: string) {
+  if (!surface) return { ok: true, surfaces: X_STATE_MAP };
+  const key = normalizeStateMapSurface(surface);
+  if (!key) {
+    return { ok: false, error: "unknown_surface", requested: surface, available: Object.keys(X_STATE_MAP) };
+  }
+  return { ok: true, surface: key, map: X_STATE_MAP[key] };
 }
 
 export async function switchXAccount(account: string, tabId?: string) {
   const tab = tabId ? { id: tabId } : await requireXTab();
+  const before = await getXState(tab.id);
   const raw = await evaluate<string>(buildAccountSwitcherExpression(true, account), tab.id);
   const result = parseJsonResult(raw) as Record<string, unknown>;
   if (result.ok !== true) {
-    throw new Error(`Could not switch X account to ${account}.`);
+    const visualSnapshot = await captureVisualSnapshot(tab.id, "account_switch_failed_before_click");
+    throw new Error(`Could not switch X account to ${account}. Diagnostics: ${JSON.stringify({ result, before, visualSnapshot })}`);
   }
   await sleep(2500);
   const state = await getXState(tab.id);
-  return { ...(result as object), state };
+  const target = account.replace(/^@+/, "").toLowerCase();
+  const activeAccount = String((state as Record<string, unknown>).activeAccount ?? "").toLowerCase();
+  if (!activeAccount.includes(`@${target}`) && !activeAccount.includes(target)) {
+    const visualSnapshot = await captureVisualSnapshot(tab.id, "account_switch_verification_failed");
+    throw new Error(`Switch click completed, but X did not settle on @${target}. Diagnostics: ${JSON.stringify({ before, result, state, visualSnapshot })}`);
+  }
+  return {
+    ...(result as object),
+    before,
+    state,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: X_STATE_MAP.account_switcher,
+  };
 }
 
 export async function waitForXReady(tabId?: string, expected: XReadyExpectation = {}) {
@@ -177,12 +273,18 @@ export async function createPost(text: string, tabId?: string) {
   await waitForXReady(tab.id, { pathIncludes: "/home", pageKind: "home" });
   await focusHomeComposer(tab.id);
   await typeInto('[data-testid="tweetTextarea_0"]', text, tab.id);
-  const beforeSubmit = await getComposerState(tab.id);
+  let beforeSubmit = await getComposerState(tab.id);
+  let composerRecovery: Record<string, unknown> | null = null;
+  if (beforeSubmit.present && beforeSubmit.hasText && !beforeSubmit.buttonEnabled && !beforeSubmit.charLimitErrorVisible) {
+    composerRecovery = await recoverComposerByRealTyping(text, tab.id, "post");
+    beforeSubmit = await getComposerState(tab.id);
+  }
   if (!beforeSubmit.present || !beforeSubmit.hasText) {
     throw new Error("Composer did not retain the typed text. X likely ignored the input.");
   }
   if (!beforeSubmit.buttonEnabled) {
-    throw new Error(`Composer has text, but the Post button is still disabled. Diagnostics: ${JSON.stringify(beforeSubmit)}`);
+    const visualSnapshot = await captureVisualSnapshot(tab.id, "post_button_disabled_after_fill");
+    throw new Error(`Composer has text, but the Post button is still disabled. Diagnostics: ${JSON.stringify({ beforeSubmit, composerRecovery, visualSnapshot })}`);
   }
   const clickResult = await clickButtonByTestId(["tweetButtonInline", "tweetButton"], tab.id, ["Post"]);
   if ((clickResult as Record<string, unknown>).ok !== true) {
@@ -194,9 +296,12 @@ export async function createPost(text: string, tabId?: string) {
   return {
     submitted: true,
     composerStateBeforeSubmit: beforeSubmit,
+    composerRecovery,
     clickResult,
     composerStateAfterSubmit: afterSubmitState,
     verify,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: X_STATE_MAP.composer,
   };
 }
 
@@ -212,12 +317,18 @@ export async function replyToPost(postUrl: string, text: string, tabId?: string)
   }
   await sleep(1500);
   await typeInto('[data-testid="tweetTextarea_0"]', text, tab.id);
-  const composer = await getComposerState(tab.id);
+  let composer = await getComposerState(tab.id);
+  let composerRecovery: Record<string, unknown> | null = null;
+  if (composer.present && composer.hasText && !composer.buttonEnabled && !composer.charLimitErrorVisible) {
+    composerRecovery = await recoverComposerByRealTyping(text, tab.id, "reply");
+    composer = await getComposerState(tab.id);
+  }
   if (!composer.present || !composer.hasText) {
     throw new Error("Reply composer did not retain the typed text.");
   }
   if (!composer.buttonEnabled) {
-    throw new Error(`Reply composer is open, but the Reply button is still disabled. Diagnostics: ${JSON.stringify(composer)}`);
+    const visualSnapshot = await captureVisualSnapshot(tab.id, "reply_button_disabled_after_fill");
+    throw new Error(`Reply composer is open, but the Reply button is still disabled. Diagnostics: ${JSON.stringify({ composer, composerRecovery, visualSnapshot })}`);
   }
   const clickResult = await clickButtonByTestId(["tweetButton", "tweetButtonInline"], tab.id, ["Reply", "Post"]);
   if ((clickResult as Record<string, unknown>).ok !== true) {
@@ -225,7 +336,18 @@ export async function replyToPost(postUrl: string, text: string, tabId?: string)
   }
   await sleep(2500);
   const verify = await verifyTextVisible(text, tab.id, "article");
-  return { submitted: true, postId, tabId: tab.id, openReplyResult, composer, clickResult, verify };
+  return {
+    submitted: true,
+    postId,
+    tabId: tab.id,
+    openReplyResult,
+    composer,
+    composerRecovery,
+    clickResult,
+    verify,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: X_STATE_MAP.composer,
+  };
 }
 
 export async function likePost(postUrl: string, tabId?: string) {
@@ -288,12 +410,13 @@ export async function followProfile(username: string, tabId?: string) {
   return { username: cleanUsername, before: beforeResult, action: "follow", clickResult, after: parseJsonResult(after), tabId: tab.id };
 }
 
-export async function getComposerState(tabId?: string) {
+export async function getComposerState(tabId?: string): Promise<XComposerState> {
   const raw = await evaluate<string>(String.raw`(() => {
     const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
     const text = textarea ? ((textarea.textContent || textarea.innerText || '').trim()) : '';
     const bodyText = document.body?.innerText || '';
     const limitMatch = bodyText.match(/You have exceeded the character limit by\s+(\d+)/i);
+    const remainingMatch = bodyText.match(/(\d+)\s+characters remaining for a standard post/i);
     const buttons = [...document.querySelectorAll('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]')];
     const candidates = buttons.map(btn => ({
       text: (btn.textContent || '').trim(),
@@ -301,6 +424,9 @@ export async function getComposerState(tabId?: string) {
       testid: btn.getAttribute('data-testid')
     }));
     const target = candidates.find(btn => ['Post', 'Reply'].includes(btn.text)) || null;
+    const audience = [...document.querySelectorAll('[role="button"], button, div[role="button"]')]
+      .map(el => ({ text: (el.textContent || '').trim(), aria: (el.getAttribute('aria-label') || '').trim() }))
+      .find(item => /choose audience/i.test(item.aria) || /everyone|community|circle|followers/i.test(item.text)) || null;
     return JSON.stringify({
       ok: true,
       present: !!textarea,
@@ -309,13 +435,21 @@ export async function getComposerState(tabId?: string) {
       hasText: text.length > 0,
       charLimitExceededBy: limitMatch ? Number(limitMatch[1]) : null,
       charLimitErrorVisible: !!limitMatch,
+      remainingCharacters: remainingMatch ? Number(remainingMatch[1]) : null,
       buttonText: target ? target.text : null,
       buttonEnabled: target ? !target.disabled : false,
       buttonTestId: target ? target.testid : null,
       buttonCandidates: candidates,
+      audienceLabel: audience ? audience.text : null,
+      audienceAriaLabel: audience ? audience.aria : null,
     });
   })();`, tabId);
-  return parseJsonResult(raw);
+  const state = parseJsonResult(raw) as Omit<XComposerState, "trustHierarchy" | "stateMap">;
+  return {
+    ...state,
+    trustHierarchy: defaultTrustHierarchy(),
+    stateMap: X_STATE_MAP.composer,
+  };
 }
 
 export async function focusHomeComposer(tabId?: string) {
@@ -424,6 +558,9 @@ function buildStateExpression() {
       return 'unknown';
     })();
     const activeAccount = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')?.textContent?.trim() || null;
+    const communityAudience = [...document.querySelectorAll('[role="button"], button, div[role="button"]')]
+      .map(el => ({ text: (el.textContent || '').trim(), aria: (el.getAttribute('aria-label') || '').trim() }))
+      .find(btn => /choose audience/i.test(btn.aria) || /community/i.test(btn.text)) || null;
     return JSON.stringify({
       ok: true,
       url,
@@ -438,6 +575,8 @@ function buildStateExpression() {
       composerPresent: !!composer,
       composerText,
       postButton,
+      audienceLabel: communityAudience ? communityAudience.text : null,
+      audienceAriaLabel: communityAudience ? communityAudience.aria : null,
     });
   })();`;
 }
@@ -887,25 +1026,51 @@ function buildAccountSwitcherExpression(click = false, requestedAccount = "") {
     const activeText = clean(switcher.textContent || '');
     const activeMatch = activeText.match(/@([A-Za-z0-9_]{1,15})/);
     const activeHandle = activeMatch ? activeMatch[1].toLowerCase() : null;
+    const readOptions = () => {
+      const all = [...document.querySelectorAll('[role="menuitem"], [data-testid="AccountSwitcher_Account_Button"], [data-testid="UserCell"]')];
+      const options = all.map(el => {
+        const text = clean(el.textContent || '');
+        const testid = el.getAttribute('data-testid') || null;
+        const role = el.getAttribute('role') || null;
+        const rect = el.getBoundingClientRect();
+        return {
+          text,
+          testid,
+          role,
+          isAccountRow: !!text && /@[A-Za-z0-9_]{1,15}/.test(text),
+          rect: { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) },
+        };
+      }).filter(item => item.text);
+      const accountRows = options.filter(item => item.isAccountRow);
+      return {
+        options,
+        accountRows,
+        optionCount: options.length,
+        accountRowCount: accountRows.length,
+        partialExtractionSuspected: options.length > 0 && accountRows.length === 0,
+      };
+    };
     if (!${click ? "true" : "false"}) {
-      const menuButtons = [...document.querySelectorAll('[role="menuitem"], [data-testid="AccountSwitcher_Account_Button"]')].map(el => clean(el.textContent || '')).filter(Boolean);
-      return JSON.stringify({ ok: true, activeText, activeHandle, menuButtons });
+      clickEl(switcher);
+      const read = readOptions();
+      return JSON.stringify({ ok: true, activeText, activeHandle, menuOpen: read.optionCount > 0, ...read });
     }
     if (!requested) return JSON.stringify({ ok: false, error: 'requested_account_missing', activeText, activeHandle });
     if (activeHandle === requested) {
       return JSON.stringify({ ok: true, action: 'already_active', requested, activeHandle });
     }
     clickEl(switcher);
+    const read = readOptions();
     const all = [...document.querySelectorAll('[role="menuitem"], [data-testid="AccountSwitcher_Account_Button"], [data-testid="UserCell"]')];
     const target = all.find(el => {
       const text = clean(el.textContent || '');
       return text.toLowerCase().includes('@' + requested) || text.toLowerCase().includes(requested);
     }) || null;
     if (!target) {
-      return JSON.stringify({ ok: false, error: 'account_option_not_found', requested, activeHandle, options: all.map(el => clean(el.textContent || '')).filter(Boolean).slice(0, 20) });
+      return JSON.stringify({ ok: false, error: 'account_option_not_found', requested, activeHandle, ...read, options: read.options.slice(0, 20) });
     }
     clickEl(target);
-    return JSON.stringify({ ok: true, action: 'clicked', requested, activeHandle, targetText: clean(target.textContent || '') });
+    return JSON.stringify({ ok: true, action: 'clicked', requested, activeHandle, targetText: clean(target.textContent || ''), ...read });
   })();`;
 }
 
@@ -990,6 +1155,85 @@ async function waitForPostAction(tabId: string | undefined, postId: string | nul
 
 function parsePostIdFromUrl(url: string) {
   return url.match(/\/status\/(\d+)/)?.[1] ?? null;
+}
+
+function defaultTrustHierarchy() {
+  return [
+    "visible active account label and route",
+    "visual snapshot of the live X surface",
+    "visible button, composer, and feed state",
+    "targeted DOM extraction",
+    "wrapper success text",
+  ];
+}
+
+function normalizeStateMapSurface(surface: string): XStateMapSurface | null {
+  const key = surface.trim().toLowerCase().replace(/\s+/g, "_") as XStateMapSurface;
+  return key in X_STATE_MAP ? key : null;
+}
+
+function toStateMapSurface(pageKind: unknown): XStateMapSurface | null {
+  const value = typeof pageKind === "string" ? pageKind : "";
+  return normalizeStateMapSurface(value);
+}
+
+async function captureVisualSnapshot(tabId: string | undefined, reason: string) {
+  try {
+    const image = await screenshot(tabId);
+    return {
+      ok: true,
+      reason,
+      bytesBase64: image.length,
+      prefix: image.slice(0, 24),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function recoverComposerByRealTyping(text: string, tabId: string | undefined, mode: "post" | "reply") {
+  const before = await getComposerState(tabId);
+  const visualSnapshot = await captureVisualSnapshot(tabId, `${mode}_composer_disabled_before_retype`);
+  await focusComposerForRealTyping(tabId);
+  await pressKey("Control+A", tabId).catch(() => null);
+  await sleep(100);
+  await pressKey("Backspace", tabId).catch(() => null);
+  await sleep(120);
+  await typeInto('[data-testid="tweetTextarea_0"]', text, tabId);
+  await sleep(500);
+  const after = await getComposerState(tabId);
+  return {
+    attempted: true,
+    mode,
+    strategy: "focus-select-all-clear-real-type",
+    before,
+    after,
+    visualSnapshot,
+  };
+}
+
+async function focusComposerForRealTyping(tabId?: string) {
+  await evaluate<string>(String.raw`(() => {
+    const clickEl = (el) => {
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      ['pointerdown','mousedown','pointerup','mouseup','click'].forEach((type) => {
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, button: 0, buttons: type.includes('down') ? 1 : 0, pointerId: 1, pointerType: 'mouse' }));
+      });
+      el.focus?.();
+      return true;
+    };
+    const composer = document.querySelector('[data-testid="tweetTextarea_0"]');
+    if (!composer) return JSON.stringify({ ok: false, error: 'composer_not_found' });
+    clickEl(composer);
+    return JSON.stringify({ ok: true });
+  })();`, tabId);
 }
 
 function normalizeXUrl(urlOrPath: string) {

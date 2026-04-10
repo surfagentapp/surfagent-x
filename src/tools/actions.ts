@@ -20,7 +20,7 @@ export const actionTools: ToolDefinition[] = [
   },
   {
     name: "x_create_post",
-    description: "Create a new X post from the home composer with button-state verification before submit.",
+    description: "Create a new X post from the home composer with button-state verification and automatic real-typing fallback if X rejects the initial input.",
     inputSchema: {
       type: "object",
       properties: {
@@ -37,7 +37,7 @@ export const actionTools: ToolDefinition[] = [
   },
   {
     name: "x_reply_to_post",
-    description: "Reply to a specific post with pre-submit composer verification and post-submit visibility verification.",
+    description: "Reply to a specific post with pre-submit composer verification, automatic real-typing fallback, and post-submit visibility verification.",
     inputSchema: {
       type: "object",
       properties: {

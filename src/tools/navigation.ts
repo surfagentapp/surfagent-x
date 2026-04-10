@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../types.js";
 import { asObject, asOptionalString, asString, textResult } from "../types.js";
-import { getXAccounts, getXState, navigateX, openXPath, switchXAccount, waitForXReady } from "../x.js";
+import { getXAccounts, getXState, getXStateMap, navigateX, openXPath, switchXAccount, waitForXReady } from "../x.js";
 
 export const navigationTools: ToolDefinition[] = [
   {
@@ -35,6 +35,22 @@ export const navigationTools: ToolDefinition[] = [
       additionalProperties: false,
     },
     handler: async () => textResult(JSON.stringify(await getXState(), null, 2)),
+  },
+  {
+    name: "x_get_state_map",
+    description: "Return the built-in X state maps for flaky surfaces like account switcher, composer, community, home, post, and profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        surface: { type: "string", description: "Optional surface name: home, account_switcher, composer, community, post, or profile." },
+      },
+      additionalProperties: false,
+    },
+    handler: async (args) => {
+      const input = asObject(args, "x_get_state_map arguments");
+      const surface = asOptionalString(input.surface)?.trim();
+      return textResult(JSON.stringify(await getXStateMap(surface), null, 2));
+    },
   },
   {
     name: "x_open_home",

@@ -28,6 +28,12 @@ It has:
 
 So this adapter wraps X-specific navigation, action, verification, and recovery into dedicated tools.
 
+It also now bakes in some hard-won X lessons:
+- account switching uses a trust hierarchy instead of one weak extraction pass
+- flaky switcher or composer states can trigger visual snapshot escalation
+- composer flows auto-recover with real typing when text appears present but X still keeps submit disabled
+- built-in state maps help agents reason about switcher, composer, and community surfaces faster
+
 ## Core tool groups
 
 ### Health and setup
@@ -36,6 +42,7 @@ So this adapter wraps X-specific navigation, action, verification, and recovery 
 
 ### Navigation and state
 - `x_get_state`
+- `x_get_state_map`
 - `x_open_home`
 - `x_open_profile`
 - `x_open_notifications`
