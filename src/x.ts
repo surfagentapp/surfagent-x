@@ -32,10 +32,10 @@ export async function requireXTab() {
   return tab;
 }
 
-export async function navigateX(urlOrPath: string) {
-  const tab = await requireXTab().catch(() => null);
+export async function navigateX(urlOrPath: string, tabId?: string) {
+  const existingTab = tabId ? { id: tabId } : await requireXTab().catch(() => null);
   const url = normalizeXUrl(urlOrPath);
-  return navigateTab(url, tab?.id);
+  return navigateTab(url, existingTab?.id);
 }
 
 export async function getXState(tabId?: string) {
@@ -118,36 +118,36 @@ export async function extractCommunity(communityUrl: string) {
   return parseJsonResult(raw);
 }
 
-export async function extractPost(postUrl: string) {
+export async function extractPost(postUrl: string, tabId?: string) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: 'post' } : { pageKind: 'post' });
   await sleep(1200);
   const raw = await evaluate<string>(buildPostExtractionExpression(postId), tab.id);
   return parseJsonResult(raw);
 }
 
-export async function extractProfile(username: string) {
+export async function extractProfile(username: string, tabId?: string) {
   const cleanUsername = username.replace(/^@+/, '');
-  const tab = await navigateX(`/${cleanUsername}`);
+  const tab = await navigateX(`/${cleanUsername}`, tabId);
   await waitForXReady(tab.id, { pageKind: 'profile' });
   await sleep(1200);
   const raw = await evaluate<string>(buildProfileExtractionExpression(), tab.id);
   return parseJsonResult(raw);
 }
 
-export async function getProfilePosts(username: string, limit = 10) {
+export async function getProfilePosts(username: string, limit = 10, tabId?: string) {
   const cleanUsername = username.replace(/^@+/, '');
-  const tab = await navigateX(`/${cleanUsername}`);
+  const tab = await navigateX(`/${cleanUsername}`, tabId);
   await waitForXReady(tab.id, { pageKind: 'profile' });
   await sleep(1200);
   const raw = await evaluate<string>(buildProfilePostsExpression(cleanUsername, limit), tab.id);
   return parseJsonResult(raw);
 }
 
-export async function getPostThread(postUrl: string, limit = 20) {
+export async function getPostThread(postUrl: string, limit = 20, tabId?: string) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: 'post' } : { pageKind: 'post' });
   await sleep(1500);
   const raw = await evaluate<string>(buildThreadExtractionExpression(postId, limit), tab.id);
@@ -182,9 +182,9 @@ export async function createPost(text: string, tabId?: string) {
   };
 }
 
-export async function replyToPost(postUrl: string, text: string) {
+export async function replyToPost(postUrl: string, text: string, tabId?: string) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await waitForPostAction(tab.id, postId, "reply");
   const openReply = await evaluate<string>(buildTargetedActionExpression(postId, "reply", true), tab.id);
@@ -207,12 +207,12 @@ export async function replyToPost(postUrl: string, text: string) {
   }
   await sleep(2500);
   const verify = await verifyTextVisible(text, tab.id, "article");
-  return { submitted: true, postId, openReplyResult, composer, clickResult, verify };
+  return { submitted: true, postId, tabId: tab.id, openReplyResult, composer, clickResult, verify };
 }
 
-export async function likePost(postUrl: string) {
+export async function likePost(postUrl: string, tabId?: string) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await waitForPostAction(tab.id, postId, "like");
   const raw = await evaluate<string>(buildTargetedActionExpression(postId, "like", true), tab.id);
@@ -222,7 +222,7 @@ export async function likePost(postUrl: string) {
   }
   await sleep(1200);
   const verify = await evaluate<string>(buildTargetedActionExpression(postId, "like_state", false), tab.id);
-  return { ...result, verify: parseJsonResult(verify), postId };
+  return { ...result, verify: parseJsonResult(verify), postId, tabId: tab.id };
 }
 
 export async function getComposerState(tabId?: string) {

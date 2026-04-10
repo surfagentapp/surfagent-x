@@ -83,6 +83,7 @@ export const navigationTools: ToolDefinition[] = [
         url: { type: "string", description: "Full X/Twitter post URL." },
         username: { type: "string", description: "Post author username if url is omitted." },
         postId: { type: "string", description: "Status/tweet ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." },
       },
       additionalProperties: false,
     },
@@ -95,7 +96,8 @@ export const navigationTools: ToolDefinition[] = [
         throw new Error("Provide either url, or username + postId.");
       }
       const target = url ?? `https://x.com/${username}/status/${postId}`;
-      const tab = await navigateX(target);
+      const tabId = asOptionalString(input.tabId)?.trim();
+      const tab = await navigateX(target, tabId);
       await waitForXReady(tab.id);
       return textResult(JSON.stringify(await getXState(tab.id), null, 2));
     },

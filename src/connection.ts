@@ -74,8 +74,9 @@ export async function listTabs(): Promise<TabInfo[]> {
 }
 
 export async function navigateTab(url: string, tabId?: string): Promise<TabInfo> {
+  const path = tabId ? "/browser/tab/navigate" : "/browser/navigate";
   const data = await daemonRequest<{ ok: boolean; tab?: TabInfo; error?: string }>(
-    "/browser/navigate",
+    path,
     {
       method: "POST",
       body: JSON.stringify(tabId ? { url, tabId } : { url }),

@@ -45,6 +45,7 @@ export const actionTools: ToolDefinition[] = [
         username: { type: "string", description: "Post author username if url is omitted." },
         postId: { type: "string", description: "Status ID if url is omitted." },
         text: { type: "string", description: "Reply text." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." },
       },
       required: ["text"],
       additionalProperties: false,
@@ -52,8 +53,9 @@ export const actionTools: ToolDefinition[] = [
     handler: async (args) => {
       const input = asObject(args, "x_reply_to_post arguments");
       const text = asString(input.text, "text");
+      const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
-      return textResult(JSON.stringify(await replyToPost(postUrl, text), null, 2));
+      return textResult(JSON.stringify(await replyToPost(postUrl, text, tabId), null, 2));
     },
   },
   {
@@ -65,13 +67,15 @@ export const actionTools: ToolDefinition[] = [
         url: { type: "string", description: "Full post URL." },
         username: { type: "string", description: "Post author username if url is omitted." },
         postId: { type: "string", description: "Status ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." },
       },
       additionalProperties: false,
     },
     handler: async (args) => {
       const input = asObject(args, "x_like_post arguments");
+      const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
-      return textResult(JSON.stringify(await likePost(postUrl), null, 2));
+      return textResult(JSON.stringify(await likePost(postUrl, tabId), null, 2));
     },
   },
   {

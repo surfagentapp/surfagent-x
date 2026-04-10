@@ -137,6 +137,7 @@ export const timelineTools: ToolDefinition[] = [
       type: "object",
       properties: {
         url: { type: "string", description: "Full X/Twitter post URL." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." },
       },
       required: ["url"],
       additionalProperties: false,
@@ -144,7 +145,8 @@ export const timelineTools: ToolDefinition[] = [
     handler: async (args) => {
       const input = asObject(args, "x_extract_post arguments");
       const url = asString(input.url, "url");
-      return textResult(JSON.stringify(await extractPost(url), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await extractPost(url, tabId), null, 2));
     },
   },
   {
@@ -154,6 +156,7 @@ export const timelineTools: ToolDefinition[] = [
       type: "object",
       properties: {
         username: { type: "string", description: "X username without @." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." },
       },
       required: ["username"],
       additionalProperties: false,
@@ -161,7 +164,8 @@ export const timelineTools: ToolDefinition[] = [
     handler: async (args) => {
       const input = asObject(args, "x_extract_profile arguments");
       const username = asString(input.username, "username").replace(/^@+/, "");
-      return textResult(JSON.stringify(await extractProfile(username), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await extractProfile(username, tabId), null, 2));
     },
   },
   {
@@ -172,6 +176,7 @@ export const timelineTools: ToolDefinition[] = [
       properties: {
         username: { type: "string", description: "X username without @." },
         limit: { type: "number", description: "Max number of profile posts to extract (1-30)." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." },
       },
       required: ["username"],
       additionalProperties: false,
@@ -180,7 +185,8 @@ export const timelineTools: ToolDefinition[] = [
       const input = asObject(args, "x_get_profile_posts arguments");
       const username = asString(input.username, "username").replace(/^@+/, "");
       const limit = Math.max(1, Math.min(30, asOptionalNumber(input.limit) ?? 10));
-      return textResult(JSON.stringify(await getProfilePosts(username, limit), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await getProfilePosts(username, limit, tabId), null, 2));
     },
   },
   {
@@ -191,6 +197,7 @@ export const timelineTools: ToolDefinition[] = [
       properties: {
         url: { type: "string", description: "Full X/Twitter post URL." },
         limit: { type: "number", description: "Max number of posts to extract from the thread (1-50)." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." },
       },
       required: ["url"],
       additionalProperties: false,
@@ -199,7 +206,8 @@ export const timelineTools: ToolDefinition[] = [
       const input = asObject(args, "x_get_post_thread arguments");
       const url = asString(input.url, "url");
       const limit = Math.max(1, Math.min(50, asOptionalNumber(input.limit) ?? 20));
-      return textResult(JSON.stringify(await getPostThread(url, limit), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await getPostThread(url, limit, tabId), null, 2));
     },
   },
 ];

@@ -20828,8 +20828,9 @@ async function listTabs() {
   return data.tabs ?? [];
 }
 async function navigateTab(url2, tabId) {
+  const path2 = tabId ? "/browser/tab/navigate" : "/browser/navigate";
   const data = await daemonRequest(
-    "/browser/navigate",
+    path2,
     {
       method: "POST",
       body: JSON.stringify(tabId ? { url: url2, tabId } : { url: url2 })
@@ -20889,10 +20890,10 @@ async function requireXTab() {
   }
   return tab;
 }
-async function navigateX(urlOrPath) {
-  const tab = await requireXTab().catch(() => null);
+async function navigateX(urlOrPath, tabId) {
+  const existingTab = tabId ? { id: tabId } : await requireXTab().catch(() => null);
   const url2 = normalizeXUrl(urlOrPath);
-  return navigateTab(url2, tab?.id);
+  return navigateTab(url2, existingTab?.id);
 }
 async function getXState(tabId) {
   const raw = await evaluate(buildStateExpression(), tabId);
@@ -20962,33 +20963,33 @@ async function extractCommunity(communityUrl) {
   const raw = await evaluate(buildCommunityExtractionExpression(), tab.id);
   return parseJsonResult(raw);
 }
-async function extractPost(postUrl) {
+async function extractPost(postUrl, tabId) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await sleep(1200);
   const raw = await evaluate(buildPostExtractionExpression(postId), tab.id);
   return parseJsonResult(raw);
 }
-async function extractProfile(username) {
+async function extractProfile(username, tabId) {
   const cleanUsername = username.replace(/^@+/, "");
-  const tab = await navigateX(`/${cleanUsername}`);
+  const tab = await navigateX(`/${cleanUsername}`, tabId);
   await waitForXReady(tab.id, { pageKind: "profile" });
   await sleep(1200);
   const raw = await evaluate(buildProfileExtractionExpression(), tab.id);
   return parseJsonResult(raw);
 }
-async function getProfilePosts(username, limit = 10) {
+async function getProfilePosts(username, limit = 10, tabId) {
   const cleanUsername = username.replace(/^@+/, "");
-  const tab = await navigateX(`/${cleanUsername}`);
+  const tab = await navigateX(`/${cleanUsername}`, tabId);
   await waitForXReady(tab.id, { pageKind: "profile" });
   await sleep(1200);
   const raw = await evaluate(buildProfilePostsExpression(cleanUsername, limit), tab.id);
   return parseJsonResult(raw);
 }
-async function getPostThread(postUrl, limit = 20) {
+async function getPostThread(postUrl, limit = 20, tabId) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await sleep(1500);
   const raw = await evaluate(buildThreadExtractionExpression(postId, limit), tab.id);
@@ -21021,9 +21022,9 @@ async function createPost(text, tabId) {
     verify
   };
 }
-async function replyToPost(postUrl, text) {
+async function replyToPost(postUrl, text, tabId) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await waitForPostAction(tab.id, postId, "reply");
   const openReply = await evaluate(buildTargetedActionExpression(postId, "reply", true), tab.id);
@@ -21046,11 +21047,11 @@ async function replyToPost(postUrl, text) {
   }
   await sleep(2500);
   const verify = await verifyTextVisible(text, tab.id, "article");
-  return { submitted: true, postId, openReplyResult, composer, clickResult, verify };
+  return { submitted: true, postId, tabId: tab.id, openReplyResult, composer, clickResult, verify };
 }
-async function likePost(postUrl) {
+async function likePost(postUrl, tabId) {
   const postId = parsePostIdFromUrl(postUrl);
-  const tab = await navigateX(postUrl);
+  const tab = await navigateX(postUrl, tabId);
   await waitForXReady(tab.id, postId ? { postId, pageKind: "post" } : { pageKind: "post" });
   await waitForPostAction(tab.id, postId, "like");
   const raw = await evaluate(buildTargetedActionExpression(postId, "like", true), tab.id);
@@ -21060,7 +21061,7 @@ async function likePost(postUrl) {
   }
   await sleep(1200);
   const verify = await evaluate(buildTargetedActionExpression(postId, "like_state", false), tab.id);
-  return { ...result, verify: parseJsonResult(verify), postId };
+  return { ...result, verify: parseJsonResult(verify), postId, tabId: tab.id };
 }
 async function getComposerState(tabId) {
   const raw = await evaluate(String.raw`(() => {
@@ -21757,7 +21758,8 @@ var navigationTools = [
       properties: {
         url: { type: "string", description: "Full X/Twitter post URL." },
         username: { type: "string", description: "Post author username if url is omitted." },
-        postId: { type: "string", description: "Status/tweet ID if url is omitted." }
+        postId: { type: "string", description: "Status/tweet ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." }
       },
       additionalProperties: false
     },
@@ -21770,7 +21772,8 @@ var navigationTools = [
         throw new Error("Provide either url, or username + postId.");
       }
       const target = url2 ?? `https://x.com/${username}/status/${postId}`;
-      const tab = await navigateX(target);
+      const tabId = asOptionalString(input.tabId)?.trim();
+      const tab = await navigateX(target, tabId);
       await waitForXReady(tab.id);
       return textResult(JSON.stringify(await getXState(tab.id), null, 2));
     }
@@ -21912,7 +21915,8 @@ var timelineTools = [
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "Full X/Twitter post URL." }
+        url: { type: "string", description: "Full X/Twitter post URL." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." }
       },
       required: ["url"],
       additionalProperties: false
@@ -21920,7 +21924,8 @@ var timelineTools = [
     handler: async (args) => {
       const input = asObject(args, "x_extract_post arguments");
       const url2 = asString(input.url, "url");
-      return textResult(JSON.stringify(await extractPost(url2), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await extractPost(url2, tabId), null, 2));
     }
   },
   {
@@ -21929,7 +21934,8 @@ var timelineTools = [
     inputSchema: {
       type: "object",
       properties: {
-        username: { type: "string", description: "X username without @." }
+        username: { type: "string", description: "X username without @." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." }
       },
       required: ["username"],
       additionalProperties: false
@@ -21937,7 +21943,8 @@ var timelineTools = [
     handler: async (args) => {
       const input = asObject(args, "x_extract_profile arguments");
       const username = asString(input.username, "username").replace(/^@+/, "");
-      return textResult(JSON.stringify(await extractProfile(username), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await extractProfile(username, tabId), null, 2));
     }
   },
   {
@@ -21947,7 +21954,8 @@ var timelineTools = [
       type: "object",
       properties: {
         username: { type: "string", description: "X username without @." },
-        limit: { type: "number", description: "Max number of profile posts to extract (1-30)." }
+        limit: { type: "number", description: "Max number of profile posts to extract (1-30)." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." }
       },
       required: ["username"],
       additionalProperties: false
@@ -21956,7 +21964,8 @@ var timelineTools = [
       const input = asObject(args, "x_get_profile_posts arguments");
       const username = asString(input.username, "username").replace(/^@+/, "");
       const limit = Math.max(1, Math.min(30, asOptionalNumber(input.limit) ?? 10));
-      return textResult(JSON.stringify(await getProfilePosts(username, limit), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await getProfilePosts(username, limit, tabId), null, 2));
     }
   },
   {
@@ -21966,7 +21975,8 @@ var timelineTools = [
       type: "object",
       properties: {
         url: { type: "string", description: "Full X/Twitter post URL." },
-        limit: { type: "number", description: "Max number of posts to extract from the thread (1-50)." }
+        limit: { type: "number", description: "Max number of posts to extract from the thread (1-50)." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse instead of opening another tab." }
       },
       required: ["url"],
       additionalProperties: false
@@ -21975,7 +21985,8 @@ var timelineTools = [
       const input = asObject(args, "x_get_post_thread arguments");
       const url2 = asString(input.url, "url");
       const limit = Math.max(1, Math.min(50, asOptionalNumber(input.limit) ?? 20));
-      return textResult(JSON.stringify(await getPostThread(url2, limit), null, 2));
+      const tabId = asOptionalString(input.tabId)?.trim();
+      return textResult(JSON.stringify(await getPostThread(url2, limit, tabId), null, 2));
     }
   }
 ];
@@ -22022,7 +22033,8 @@ var actionTools = [
         url: { type: "string", description: "Full post URL." },
         username: { type: "string", description: "Post author username if url is omitted." },
         postId: { type: "string", description: "Status ID if url is omitted." },
-        text: { type: "string", description: "Reply text." }
+        text: { type: "string", description: "Reply text." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." }
       },
       required: ["text"],
       additionalProperties: false
@@ -22030,8 +22042,9 @@ var actionTools = [
     handler: async (args) => {
       const input = asObject(args, "x_reply_to_post arguments");
       const text = asString(input.text, "text");
+      const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
-      return textResult(JSON.stringify(await replyToPost(postUrl, text), null, 2));
+      return textResult(JSON.stringify(await replyToPost(postUrl, text, tabId), null, 2));
     }
   },
   {
@@ -22042,14 +22055,16 @@ var actionTools = [
       properties: {
         url: { type: "string", description: "Full post URL." },
         username: { type: "string", description: "Post author username if url is omitted." },
-        postId: { type: "string", description: "Status ID if url is omitted." }
+        postId: { type: "string", description: "Status ID if url is omitted." },
+        tabId: { type: "string", description: "Optional existing X tab id to reuse for this action." }
       },
       additionalProperties: false
     },
     handler: async (args) => {
       const input = asObject(args, "x_like_post arguments");
+      const tabId = asOptionalString(input.tabId)?.trim();
       const postUrl = resolvePostUrl(input);
-      return textResult(JSON.stringify(await likePost(postUrl), null, 2));
+      return textResult(JSON.stringify(await likePost(postUrl, tabId), null, 2));
     }
   },
   {
