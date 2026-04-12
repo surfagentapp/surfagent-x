@@ -7,6 +7,7 @@ export type TaskStep = {
   startedAt: string;
   finishedAt?: string;
   details?: unknown;
+  error?: { message: string };
 };
 
 export type ScreenshotArtifact = {
@@ -19,8 +20,13 @@ export type TaskRunBase = {
   ok: boolean;
   runId: string;
   steps: TaskStep[];
-  screenshots: ScreenshotArtifact[];
-  error?: string;
+  artifacts: ScreenshotArtifact[];
+  screenshots?: ScreenshotArtifact[];
+  error?: {
+    code: string;
+    message: string;
+    retryable?: boolean;
+  };
 };
 
 export type CreateTaskRunnerRuntimeOptions = {
@@ -40,6 +46,15 @@ export function createTaskRunnerRuntime(options: CreateTaskRunnerRuntimeOptions)
   const now = options.now ?? (() => new Date().toISOString());
   const slug = options.slug ?? ((label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'artifact');
 
+  function getArtifactList<TRun extends TaskRunBase>(run: TRun): ScreenshotArtifact[] {
+    if (Array.isArray(run.screenshots) && run.screenshots !== run.artifacts) {
+      run.artifacts = run.screenshots;
+      return run.artifacts;
+    }
+    run.screenshots = run.artifacts;
+    return run.artifacts;
+  }
+
   async function ensureRunDir(runId: string): Promise<string> {
     const dir = join(options.rootDir, runId);
     await mkdir(dir, { recursive: true });
@@ -58,19 +73,23 @@ export function createTaskRunnerRuntime(options: CreateTaskRunnerRuntimeOptions)
     return writeRunFile(run.runId, 'run.json', JSON.stringify(run, null, 2));
   }
 
-  async function captureScreenshot<TRun extends TaskRunBase>(run: TRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact> {
+  async function captureScreenshot<TRun extends TaskRunBase>(run: TRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact | null> {
     const image = await options.screenshot(tabId);
+    if (!image) return null;
     const payload = cleanBase64Image(image);
     const safeLabel = slug(label);
-    const path = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, '0')}-${safeLabel}.png`, Buffer.from(payload, 'base64'));
+    const artifacts = getArtifactList(run);
+    const path = await writeRunFile(run.runId, `${String(artifacts.length + 1).padStart(2, '0')}-${safeLabel}.png`, Buffer.from(payload, 'base64'));
     const artifact = { label, path, takenAt: now() };
-    run.screenshots.push(artifact);
+    artifacts.push(artifact);
+    await writeRunManifest(run);
     return artifact;
   }
 
   async function withStep<T, TRun extends TaskRunBase>(run: TRun, name: string, fn: () => Promise<T>): Promise<T> {
     const step: TaskStep = { name, status: 'started', startedAt: now() };
     run.steps.push(step);
+    getArtifactList(run);
     await writeRunManifest(run);
     try {
       const result = await fn();
@@ -82,7 +101,7 @@ export function createTaskRunnerRuntime(options: CreateTaskRunnerRuntimeOptions)
     } catch (error) {
       step.status = 'failed';
       step.finishedAt = now();
-      step.details = error instanceof Error ? error.message : String(error);
+      step.error = { message: error instanceof Error ? error.message : String(error) };
       await writeRunManifest(run);
       throw error;
     }

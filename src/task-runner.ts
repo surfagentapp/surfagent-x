@@ -7,14 +7,16 @@ import { createTaskRunnerRuntime, type ScreenshotArtifact, type TaskRunBase, typ
 export type XTaskKind = "engage-post" | "quote-post" | "reply-post" | "follow-profile" | "community-post" | "switch-account-and-act";
 
 type TaskRun = TaskRunBase & {
+  adapter: "x";
   task: XTaskKind;
   account: string;
   url: string;
   quoteText?: string;
   steps: TaskStep[];
+  artifacts: ScreenshotArtifact[];
   screenshots: ScreenshotArtifact[];
   state?: unknown;
-  error?: string;
+  error?: { code: string; message: string; retryable?: boolean };
 };
 
 export type EngagePostOptions = {
@@ -75,7 +77,7 @@ function extractHandle(value: unknown): string | null {
   return handle ? handle.toLowerCase() : null;
 }
 
-async function captureRunScreenshot(run: TaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact> {
+async function captureRunScreenshot(run: TaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact | null> {
   return runtime.captureScreenshot(run, tabId, label);
 }
 
@@ -88,10 +90,27 @@ async function withStep<T>(run: TaskRun, name: string, fn: () => Promise<T>): Pr
     return await runtime.withStep(run, name, fn);
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
+}
+
+function inferErrorCode(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (/switch.*account|active handle|active account/i.test(text)) return 'account_switch_failed';
+  if (/composer/i.test(text)) return 'composer_not_ready';
+  if (/timed out|timeout|waiting for x to settle/i.test(text)) return 'surface_not_ready';
+  if (/community/i.test(text)) return 'community_action_failed';
+  if (/follow/i.test(text)) return 'follow_failed';
+  if (/reply/i.test(text)) return 'reply_failed';
+  if (/quote/i.test(text)) return 'quote_failed';
+  if (/like|repost/i.test(text)) return 'engagement_failed';
+  return 'task_failed';
 }
 
 async function ensureHomeAndSwitch(account: string, run: TaskRun): Promise<{ tabId: string; state: unknown; activeHandle: string | null }> {
@@ -244,14 +263,17 @@ async function submitComposer(tabId: string, submitId: string, label: string, ru
 }
 
 export async function runEngagePostTask(options: EngagePostOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: "x",
     task: "engage-post",
     runId: runtime.makeRunId(`${slug(options.account)}-engage-post`),
     account: options.account,
     url: options.url,
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -285,22 +307,29 @@ export async function runEngagePostTask(options: EngagePostOptions): Promise<Tas
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
 }
 
 export async function runQuotePostTask(options: QuotePostOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: "x",
     task: "quote-post",
     runId: runtime.makeRunId(`${slug(options.account)}-quote-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -378,22 +407,29 @@ export async function runQuotePostTask(options: QuotePostOptions): Promise<TaskR
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
 }
 
 export async function runReplyPostTask(options: ReplyPostOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: 'x',
     task: 'reply-post',
     runId: runtime.makeRunId(`${slug(options.account)}-reply-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -417,21 +453,28 @@ export async function runReplyPostTask(options: ReplyPostOptions): Promise<TaskR
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
 }
 
 export async function runFollowProfileTask(options: FollowProfileOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: 'x',
     task: 'follow-profile',
     runId: runtime.makeRunId(`${slug(options.account)}-follow-profile`),
     account: options.account,
     url: `https://x.com/${options.username.replace(/^@+/, '')}`,
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -451,22 +494,29 @@ export async function runFollowProfileTask(options: FollowProfileOptions): Promi
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
 }
 
 export async function runCommunityPostTask(options: CommunityPostOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: 'x',
     task: 'community-post',
     runId: runtime.makeRunId(`${slug(options.account)}-community-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -493,21 +543,28 @@ export async function runCommunityPostTask(options: CommunityPostOptions): Promi
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }
 }
 
 export async function runSwitchAccountAndActTask(options: SwitchAccountAndActOptions): Promise<TaskRun> {
+  const artifacts: ScreenshotArtifact[] = [];
   const run: TaskRun = {
     ok: true,
+    adapter: 'x',
     task: 'switch-account-and-act',
     runId: runtime.makeRunId(`${slug(options.account)}-switch-account-and-act`),
     account: options.account,
     url: options.url ?? (options.username ? `https://x.com/${options.username.replace(/^@+/, '')}` : 'https://x.com/home'),
     steps: [],
-    screenshots: [],
+    artifacts,
+    screenshots: artifacts,
   };
 
   try {
@@ -549,7 +606,11 @@ export async function runSwitchAccountAndActTask(options: SwitchAccountAndActOpt
     return run;
   } catch (error) {
     run.ok = false;
-    run.error = error instanceof Error ? error.message : String(error);
+    run.error = {
+      code: inferErrorCode(error),
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+    };
     await overwriteRunManifest(run);
     throw error;
   }

@@ -22483,6 +22483,14 @@ function cleanBase64Image(input) {
 function createTaskRunnerRuntime(options) {
   const now = options.now ?? (() => (/* @__PURE__ */ new Date()).toISOString());
   const slug2 = options.slug ?? ((label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "artifact");
+  function getArtifactList(run) {
+    if (Array.isArray(run.screenshots) && run.screenshots !== run.artifacts) {
+      run.artifacts = run.screenshots;
+      return run.artifacts;
+    }
+    run.screenshots = run.artifacts;
+    return run.artifacts;
+  }
   async function ensureRunDir(runId) {
     const dir = (0, import_node_path2.join)(options.rootDir, runId);
     await (0, import_promises.mkdir)(dir, { recursive: true });
@@ -22500,16 +22508,20 @@ function createTaskRunnerRuntime(options) {
   }
   async function captureScreenshot(run, tabId, label) {
     const image = await options.screenshot(tabId);
+    if (!image) return null;
     const payload = cleanBase64Image(image);
     const safeLabel = slug2(label);
-    const path2 = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
+    const artifacts = getArtifactList(run);
+    const path2 = await writeRunFile(run.runId, `${String(artifacts.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
     const artifact = { label, path: path2, takenAt: now() };
-    run.screenshots.push(artifact);
+    artifacts.push(artifact);
+    await writeRunManifest(run);
     return artifact;
   }
   async function withStep2(run, name, fn) {
     const step = { name, status: "started", startedAt: now() };
     run.steps.push(step);
+    getArtifactList(run);
     await writeRunManifest(run);
     try {
       const result = await fn();
@@ -22521,7 +22533,7 @@ function createTaskRunnerRuntime(options) {
     } catch (error2) {
       step.status = "failed";
       step.finishedAt = now();
-      step.details = error2 instanceof Error ? error2.message : String(error2);
+      step.error = { message: error2 instanceof Error ? error2.message : String(error2) };
       await writeRunManifest(run);
       throw error2;
     }
@@ -22563,10 +22575,26 @@ async function withStep(run, name, fn) {
     return await runtime.withStep(run, name, fn);
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
+}
+function inferErrorCode(error2) {
+  const text = error2 instanceof Error ? error2.message : String(error2);
+  if (/switch.*account|active handle|active account/i.test(text)) return "account_switch_failed";
+  if (/composer/i.test(text)) return "composer_not_ready";
+  if (/timed out|timeout|waiting for x to settle/i.test(text)) return "surface_not_ready";
+  if (/community/i.test(text)) return "community_action_failed";
+  if (/follow/i.test(text)) return "follow_failed";
+  if (/reply/i.test(text)) return "reply_failed";
+  if (/quote/i.test(text)) return "quote_failed";
+  if (/like|repost/i.test(text)) return "engagement_failed";
+  return "task_failed";
 }
 async function ensureHomeAndSwitch(account, run) {
   const homeTab = await navigateX("/home");
@@ -22706,14 +22734,17 @@ async function submitComposer(tabId, submitId, label, run) {
   return taggedSubmit;
 }
 async function runEngagePostTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "engage-post",
     runId: runtime.makeRunId(`${slug(options.account)}-engage-post`),
     account: options.account,
     url: options.url,
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22742,21 +22773,28 @@ async function runEngagePostTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
 }
 async function runQuotePostTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "quote-post",
     runId: runtime.makeRunId(`${slug(options.account)}-quote-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22826,21 +22864,28 @@ async function runQuotePostTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
 }
 async function runReplyPostTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "reply-post",
     runId: runtime.makeRunId(`${slug(options.account)}-reply-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22861,20 +22906,27 @@ async function runReplyPostTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
 }
 async function runFollowProfileTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "follow-profile",
     runId: runtime.makeRunId(`${slug(options.account)}-follow-profile`),
     account: options.account,
     url: `https://x.com/${options.username.replace(/^@+/, "")}`,
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22893,21 +22945,28 @@ async function runFollowProfileTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
 }
 async function runCommunityPostTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "community-post",
     runId: runtime.makeRunId(`${slug(options.account)}-community-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22930,20 +22989,27 @@ async function runCommunityPostTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
 }
 async function runSwitchAccountAndActTask(options) {
+  const artifacts = [];
   const run = {
     ok: true,
+    adapter: "x",
     task: "switch-account-and-act",
     runId: runtime.makeRunId(`${slug(options.account)}-switch-account-and-act`),
     account: options.account,
     url: options.url ?? (options.username ? `https://x.com/${options.username.replace(/^@+/, "")}` : "https://x.com/home"),
     steps: [],
-    screenshots: []
+    artifacts,
+    screenshots: artifacts
   };
   try {
     const switched = await withStep(run, "switch-account", async () => ensureHomeAndSwitch(options.account, run));
@@ -22983,7 +23049,11 @@ async function runSwitchAccountAndActTask(options) {
     return run;
   } catch (error2) {
     run.ok = false;
-    run.error = error2 instanceof Error ? error2.message : String(error2);
+    run.error = {
+      code: inferErrorCode(error2),
+      message: error2 instanceof Error ? error2.message : String(error2),
+      retryable: true
+    };
     await overwriteRunManifest(run);
     throw error2;
   }
