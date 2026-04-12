@@ -22562,20 +22562,82 @@ var timelineTools = [
 ];
 
 // src/task-runner.ts
+var import_node_path3 = require("node:path");
+var import_node_os2 = require("node:os");
+
+// src/task-runner-runtime.ts
 var import_promises = require("node:fs/promises");
 var import_node_path2 = require("node:path");
-var import_node_os2 = require("node:os");
-var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "surfagent-x-runs");
-function isoNow() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function slug(text) {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
-}
 function cleanBase64Image(input) {
   const value = input.trim();
   const comma = value.indexOf(",");
   return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
+}
+function createTaskRunnerRuntime(options) {
+  const now = options.now ?? (() => (/* @__PURE__ */ new Date()).toISOString());
+  const slug2 = options.slug ?? ((label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "artifact");
+  async function ensureRunDir(runId) {
+    const dir = (0, import_node_path2.join)(options.rootDir, runId);
+    await (0, import_promises.mkdir)(dir, { recursive: true });
+    return dir;
+  }
+  async function writeRunFile(runId, filename, content, encoding) {
+    const dir = await ensureRunDir(runId);
+    const fullPath = (0, import_node_path2.join)(dir, filename);
+    if (typeof content === "string") await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
+    else await (0, import_promises.writeFile)(fullPath, content);
+    return fullPath;
+  }
+  async function writeRunManifest(run) {
+    return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  }
+  async function captureScreenshot(run, tabId, label) {
+    const image = await options.screenshot(tabId);
+    const payload = cleanBase64Image(image);
+    const safeLabel = slug2(label);
+    const path2 = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
+    const artifact = { label, path: path2, takenAt: now() };
+    run.screenshots.push(artifact);
+    return artifact;
+  }
+  async function withStep2(run, name, fn) {
+    const step = { name, status: "started", startedAt: now() };
+    run.steps.push(step);
+    await writeRunManifest(run);
+    try {
+      const result = await fn();
+      step.status = "completed";
+      step.finishedAt = now();
+      step.details = result;
+      await writeRunManifest(run);
+      return result;
+    } catch (error2) {
+      step.status = "failed";
+      step.finishedAt = now();
+      step.details = error2 instanceof Error ? error2.message : String(error2);
+      await writeRunManifest(run);
+      throw error2;
+    }
+  }
+  function makeRunId(task) {
+    return `${now().replace(/[-:.TZ]/g, "").slice(0, 14)}-${task}`;
+  }
+  return {
+    makeRunId,
+    writeRunManifest,
+    captureScreenshot,
+    withStep: withStep2
+  };
+}
+
+// src/task-runner.ts
+var RUN_ROOT = process.env.SURFAGENT_RUN_DIR || (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "surfagent-x-runs");
+var runtime = createTaskRunnerRuntime({
+  rootDir: RUN_ROOT,
+  screenshot
+});
+function slug(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
 }
 function extractHandle(value) {
   if (typeof value !== "string") return null;
@@ -22583,48 +22645,16 @@ function extractHandle(value) {
   const handle = match?.[1];
   return handle ? handle.toLowerCase() : null;
 }
-async function ensureRunDir(runId) {
-  const dir = (0, import_node_path2.join)(RUN_ROOT, runId);
-  await (0, import_promises.mkdir)(dir, { recursive: true });
-  return dir;
-}
-async function writeRunFile(runId, filename, content, encoding) {
-  const dir = await ensureRunDir(runId);
-  const fullPath = (0, import_node_path2.join)(dir, filename);
-  if (typeof content === "string") {
-    await (0, import_promises.writeFile)(fullPath, content, encoding ?? "utf8");
-  } else {
-    await (0, import_promises.writeFile)(fullPath, content);
-  }
-  return fullPath;
-}
 async function captureRunScreenshot(run, tabId, label) {
-  const image = await screenshot(tabId);
-  const payload = cleanBase64Image(image);
-  const safeLabel = slug(label);
-  const path2 = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
-  const artifact = { label, path: path2, takenAt: isoNow() };
-  run.screenshots.push(artifact);
-  return artifact;
+  return runtime.captureScreenshot(run, tabId, label);
 }
 async function overwriteRunManifest(run) {
-  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  return runtime.writeRunManifest(run);
 }
 async function withStep(run, name, fn) {
-  const step = { name, status: "started", startedAt: isoNow() };
-  run.steps.push(step);
-  await overwriteRunManifest(run);
   try {
-    const result = await fn();
-    step.status = "completed";
-    step.finishedAt = isoNow();
-    step.details = result;
-    await overwriteRunManifest(run);
-    return result;
+    return await runtime.withStep(run, name, fn);
   } catch (error2) {
-    step.status = "failed";
-    step.finishedAt = isoNow();
-    step.details = error2 instanceof Error ? error2.message : String(error2);
     run.ok = false;
     run.error = error2 instanceof Error ? error2.message : String(error2);
     await overwriteRunManifest(run);
@@ -22772,7 +22802,7 @@ async function runEngagePostTask(options) {
   const run = {
     ok: true,
     task: "engage-post",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-engage-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-engage-post`),
     account: options.account,
     url: options.url,
     steps: [],
@@ -22814,7 +22844,7 @@ async function runQuotePostTask(options) {
   const run = {
     ok: true,
     task: "quote-post",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-quote-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-quote-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -22898,7 +22928,7 @@ async function runReplyPostTask(options) {
   const run = {
     ok: true,
     task: "reply-post",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-reply-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-reply-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -22933,7 +22963,7 @@ async function runFollowProfileTask(options) {
   const run = {
     ok: true,
     task: "follow-profile",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-follow-profile`,
+    runId: runtime.makeRunId(`${slug(options.account)}-follow-profile`),
     account: options.account,
     url: `https://x.com/${options.username.replace(/^@+/, "")}`,
     steps: [],
@@ -22965,7 +22995,7 @@ async function runCommunityPostTask(options) {
   const run = {
     ok: true,
     task: "community-post",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-community-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-community-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -23002,7 +23032,7 @@ async function runSwitchAccountAndActTask(options) {
   const run = {
     ok: true,
     task: "switch-account-and-act",
-    runId: `${(/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-switch-account-and-act`,
+    runId: runtime.makeRunId(`${slug(options.account)}-switch-account-and-act`),
     account: options.account,
     url: options.url ?? (options.username ? `https://x.com/${options.username.replace(/^@+/, "")}` : "https://x.com/home"),
     steps: [],
@@ -23490,12 +23520,12 @@ var actionTools = [
 // src/tools/research.ts
 var import_promises2 = require("node:fs/promises");
 var import_node_os3 = __toESM(require("node:os"));
-var import_node_path3 = __toESM(require("node:path"));
+var import_node_path4 = __toESM(require("node:path"));
 function slugify2(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "run";
 }
 function getDefaultOutputDir() {
-  return import_node_path3.default.join(import_node_os3.default.homedir(), ".surfagent", "receipts", "x-research");
+  return import_node_path4.default.join(import_node_os3.default.homedir(), ".surfagent", "receipts", "x-research");
 }
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -23542,11 +23572,11 @@ async function maybePersistRun(kind, label, payload, options) {
   await (0, import_promises2.mkdir)(baseDir, { recursive: true });
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const runSlug = `${timestamp}-${kind}-${slugify2(label)}`;
-  const runDir = import_node_path3.default.join(baseDir, runSlug);
+  const runDir = import_node_path4.default.join(baseDir, runSlug);
   await (0, import_promises2.mkdir)(runDir, { recursive: true });
   const files = [];
   const writeJson = async (name, value) => {
-    const filePath = import_node_path3.default.join(runDir, name);
+    const filePath = import_node_path4.default.join(runDir, name);
     await (0, import_promises2.writeFile)(filePath, JSON.stringify(value, null, 2), "utf8");
     files.push(name);
   };
@@ -23569,12 +23599,12 @@ async function maybePersistRun(kind, label, payload, options) {
     }
   }
   const markdownName = "SUMMARY.md";
-  await (0, import_promises2.writeFile)(import_node_path3.default.join(runDir, markdownName), buildRunSummaryMarkdown(kind, label, payloadRecord), "utf8");
+  await (0, import_promises2.writeFile)(import_node_path4.default.join(runDir, markdownName), buildRunSummaryMarkdown(kind, label, payloadRecord), "utf8");
   files.push(markdownName);
   return {
     saved: true,
     dir: runDir,
-    bundlePath: import_node_path3.default.join(runDir, "bundle.json"),
+    bundlePath: import_node_path4.default.join(runDir, "bundle.json"),
     files
   };
 }

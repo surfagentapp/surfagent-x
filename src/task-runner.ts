@@ -1,31 +1,13 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { clickSelector, evaluate, pressKey, screenshot, typeInto } from "./connection.js";
 import { followProfile, getComposerState, getXState, likePost, navigateX, replyToPost, repostPost, switchXAccount, verifyTextVisible, waitForXReady } from "./x.js";
+import { createTaskRunnerRuntime, type ScreenshotArtifact, type TaskRunBase, type TaskStep } from "./task-runner-runtime.js";
 
 export type XTaskKind = "engage-post" | "quote-post" | "reply-post" | "follow-profile" | "community-post" | "switch-account-and-act";
 
-type TaskStepStatus = "started" | "completed" | "failed";
-
-type TaskStep = {
-  name: string;
-  status: TaskStepStatus;
-  startedAt: string;
-  finishedAt?: string;
-  details?: unknown;
-};
-
-type ScreenshotArtifact = {
-  label: string;
-  path: string;
-  takenAt: string;
-};
-
-type TaskRun = {
-  ok: boolean;
+type TaskRun = TaskRunBase & {
   task: XTaskKind;
-  runId: string;
   account: string;
   url: string;
   quoteText?: string;
@@ -77,18 +59,13 @@ export type SwitchAccountAndActOptions = {
 
 const RUN_ROOT = process.env.SURFAGENT_RUN_DIR || join(tmpdir(), "surfagent-x-runs");
 
-function isoNow(): string {
-  return new Date().toISOString();
-}
+const runtime = createTaskRunnerRuntime({
+  rootDir: RUN_ROOT,
+  screenshot,
+});
 
 function slug(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "run";
-}
-
-function cleanBase64Image(input: string): string {
-  const value = input.trim();
-  const comma = value.indexOf(",");
-  return value.startsWith("data:") && comma >= 0 ? value.slice(comma + 1) : value;
 }
 
 function extractHandle(value: unknown): string | null {
@@ -98,52 +75,18 @@ function extractHandle(value: unknown): string | null {
   return handle ? handle.toLowerCase() : null;
 }
 
-async function ensureRunDir(runId: string): Promise<string> {
-  const dir = join(RUN_ROOT, runId);
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
-
-async function writeRunFile(runId: string, filename: string, content: string | Buffer, encoding?: BufferEncoding): Promise<string> {
-  const dir = await ensureRunDir(runId);
-  const fullPath = join(dir, filename);
-  if (typeof content === "string") {
-    await writeFile(fullPath, content, encoding ?? "utf8");
-  } else {
-    await writeFile(fullPath, content);
-  }
-  return fullPath;
-}
-
 async function captureRunScreenshot(run: TaskRun, tabId: string | undefined, label: string): Promise<ScreenshotArtifact> {
-  const image = await screenshot(tabId);
-  const payload = cleanBase64Image(image);
-  const safeLabel = slug(label);
-  const path = await writeRunFile(run.runId, `${String(run.screenshots.length + 1).padStart(2, "0")}-${safeLabel}.png`, Buffer.from(payload, "base64"));
-  const artifact = { label, path, takenAt: isoNow() };
-  run.screenshots.push(artifact);
-  return artifact;
+  return runtime.captureScreenshot(run, tabId, label);
 }
 
 async function overwriteRunManifest(run: TaskRun): Promise<string> {
-  return writeRunFile(run.runId, "run.json", JSON.stringify(run, null, 2));
+  return runtime.writeRunManifest(run);
 }
 
 async function withStep<T>(run: TaskRun, name: string, fn: () => Promise<T>): Promise<T> {
-  const step: TaskStep = { name, status: "started", startedAt: isoNow() };
-  run.steps.push(step);
-  await overwriteRunManifest(run);
   try {
-    const result = await fn();
-    step.status = "completed";
-    step.finishedAt = isoNow();
-    step.details = result;
-    await overwriteRunManifest(run);
-    return result;
+    return await runtime.withStep(run, name, fn);
   } catch (error) {
-    step.status = "failed";
-    step.finishedAt = isoNow();
-    step.details = error instanceof Error ? error.message : String(error);
     run.ok = false;
     run.error = error instanceof Error ? error.message : String(error);
     await overwriteRunManifest(run);
@@ -304,7 +247,7 @@ export async function runEngagePostTask(options: EngagePostOptions): Promise<Tas
   const run: TaskRun = {
     ok: true,
     task: "engage-post",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-engage-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-engage-post`),
     account: options.account,
     url: options.url,
     steps: [],
@@ -352,7 +295,7 @@ export async function runQuotePostTask(options: QuotePostOptions): Promise<TaskR
   const run: TaskRun = {
     ok: true,
     task: "quote-post",
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${slug(options.account)}-quote-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-quote-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -445,7 +388,7 @@ export async function runReplyPostTask(options: ReplyPostOptions): Promise<TaskR
   const run: TaskRun = {
     ok: true,
     task: 'reply-post',
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${slug(options.account)}-reply-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-reply-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -484,7 +427,7 @@ export async function runFollowProfileTask(options: FollowProfileOptions): Promi
   const run: TaskRun = {
     ok: true,
     task: 'follow-profile',
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${slug(options.account)}-follow-profile`,
+    runId: runtime.makeRunId(`${slug(options.account)}-follow-profile`),
     account: options.account,
     url: `https://x.com/${options.username.replace(/^@+/, '')}`,
     steps: [],
@@ -518,7 +461,7 @@ export async function runCommunityPostTask(options: CommunityPostOptions): Promi
   const run: TaskRun = {
     ok: true,
     task: 'community-post',
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${slug(options.account)}-community-post`,
+    runId: runtime.makeRunId(`${slug(options.account)}-community-post`),
     account: options.account,
     url: options.url,
     quoteText: options.text,
@@ -560,7 +503,7 @@ export async function runSwitchAccountAndActTask(options: SwitchAccountAndActOpt
   const run: TaskRun = {
     ok: true,
     task: 'switch-account-and-act',
-    runId: `${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${slug(options.account)}-switch-account-and-act`,
+    runId: runtime.makeRunId(`${slug(options.account)}-switch-account-and-act`),
     account: options.account,
     url: options.url ?? (options.username ? `https://x.com/${options.username.replace(/^@+/, '')}` : 'https://x.com/home'),
     steps: [],
