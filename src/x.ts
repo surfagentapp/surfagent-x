@@ -1,4 +1,5 @@
 import { ensureXTab, evaluate, findXTab, navigateTab, pressKey, screenshot, typeInto } from "./connection.js";
+import { searchHermesPosts, shouldUseHermesSearchBackend } from "./hermes.js";
 
 export type XPageKind =
   | "home"
@@ -189,6 +190,10 @@ export async function getTimelinePosts(limit = 10, tabId?: string) {
 }
 
 export async function searchXPosts(query: string, limit = 10) {
+  if (shouldUseHermesSearchBackend()) {
+    return searchHermesPosts(query, limit);
+  }
+
   const path = `/search?q=${encodeURIComponent(query)}&src=typed_query&f=live`;
   const tab = await openXPath(path);
   await waitForXReady(tab.id, { pathIncludes: "/search", pageKind: "search" });
