@@ -20911,6 +20911,153 @@ async function ensureXTab(path2 = "/home") {
   return navigateTab(targetUrl);
 }
 
+// src/hermes.ts
+var DEFAULT_HERMES_BASE_URL = "https://xquik.com";
+var HERMES_TIMEOUT_MS = 3e4;
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function firstEnv(names, fallback = "") {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return fallback;
+}
+function clampLimit(limit) {
+  return Math.max(1, Math.min(100, Math.floor(limit)));
+}
+function textField(source, names) {
+  for (const name of names) {
+    const value = source[name];
+    if (value !== void 0 && value !== null) return String(value);
+  }
+  return "";
+}
+function numberField(source, names) {
+  for (const name of names) {
+    const value = source[name];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  }
+  return 0;
+}
+function metricField(source, metrics, names) {
+  return numberField(metrics, names) || numberField(source, names);
+}
+function findItems(value) {
+  if (Array.isArray(value)) return value.map(asRecord).filter((item) => item !== null);
+  const record2 = asRecord(value);
+  if (!record2) return [];
+  for (const key of ["data", "tweets", "results", "items"]) {
+    const child = record2[key];
+    if (Array.isArray(child)) return child.map(asRecord).filter((item) => item !== null);
+    const nested = asRecord(child);
+    if (nested) {
+      const items = findItems(nested);
+      if (items.length) return items;
+    }
+  }
+  return [];
+}
+function getAuthorHandle(tweet) {
+  const author = tweet.author ?? tweet.user ?? tweet.creator;
+  if (typeof author === "string") return author.replace(/^@+/, "");
+  const authorRecord = asRecord(author);
+  if (authorRecord) {
+    return textField(authorRecord, ["username", "screen_name", "handle"]).replace(/^@+/, "");
+  }
+  return textField(tweet, ["username", "author_username", "screen_name"]).replace(/^@+/, "");
+}
+function formatMetricLabel(count, label) {
+  return count > 0 ? `${count} ${label}` : null;
+}
+function normalizeHermesPost(tweet, index) {
+  const metrics = asRecord(tweet.public_metrics ?? tweet.metrics) ?? {};
+  const authorRecord = asRecord(tweet.author ?? tweet.user ?? tweet.creator) ?? {};
+  const authorMetrics = asRecord(authorRecord.public_metrics ?? authorRecord.metrics) ?? {};
+  const author = getAuthorHandle(tweet) || null;
+  const postId = textField(tweet, ["id", "tweet_id", "tweetId", "rest_id"]) || null;
+  const url2 = textField(tweet, ["url"]) || (author && postId ? `https://x.com/${author}/status/${postId}` : null);
+  const replies = metricField(tweet, metrics, ["reply_count", "replies"]);
+  const reposts = metricField(tweet, metrics, ["retweet_count", "retweets", "reposts"]);
+  const likes = metricField(tweet, metrics, ["like_count", "likes", "favorite_count"]);
+  return {
+    index,
+    postId,
+    url: url2,
+    statusUrl: url2,
+    author,
+    text: textField(tweet, ["text", "full_text", "fullText", "content"]),
+    reply: formatMetricLabel(replies, "replies"),
+    repost: formatMetricLabel(reposts, "reposts"),
+    like: formatMetricLabel(likes, "likes"),
+    liked: false,
+    media: [],
+    metrics: {
+      replies,
+      reposts,
+      likes,
+      impressions: metricField(tweet, metrics, ["impression_count", "impressions", "views"]),
+      authorFollowers: metricField(tweet, metrics, ["author_followers", "followers_count", "followers"]) || metricField(authorRecord, authorMetrics, ["followers_count", "followers"])
+    },
+    diagnostics: {
+      source: "hermes-tweet",
+      createdAt: textField(tweet, ["created_at", "createdAt"]) || null,
+      conversationId: textField(tweet, ["conversation_id", "conversationId"]) || null
+    }
+  };
+}
+function shouldUseHermesSearchBackend() {
+  const backend = firstEnv(["SURFAGENT_X_READ_BACKEND", "HERMES_TWEET_READ_BACKEND"]).toLowerCase();
+  return backend === "hermes" || backend === "hermes-tweet" || backend === "xquik";
+}
+function buildHermesHeaders(apiKey = firstEnv(["HERMES_TWEET_API_KEY", "XQUIK_API_KEY"])) {
+  if (!apiKey) {
+    throw new Error("Hermes Tweet search backend is enabled but HERMES_TWEET_API_KEY or XQUIK_API_KEY is not configured.");
+  }
+  if (apiKey.startsWith("xq_")) return { "x-api-key": apiKey };
+  return { Authorization: `Bearer ${apiKey}` };
+}
+function normalizeHermesSearchPayload(payload, query, limit) {
+  const max = clampLimit(limit);
+  const posts = findItems(payload).slice(0, max).map((tweet, index) => normalizeHermesPost(tweet, index));
+  return {
+    ok: true,
+    count: posts.length,
+    posts,
+    diagnostics: {
+      source: "hermes-tweet",
+      query,
+      limit: max
+    }
+  };
+}
+async function searchHermesPosts(query, limit = 10) {
+  const baseUrl = firstEnv(["HERMES_TWEET_BASE_URL", "XQUIK_BASE_URL"], DEFAULT_HERMES_BASE_URL);
+  const url2 = new URL("/api/v1/x/tweets/search", baseUrl);
+  url2.searchParams.set("q", query);
+  url2.searchParams.set("limit", String(clampLimit(limit)));
+  const response = await fetch(url2, {
+    method: "GET",
+    headers: buildHermesHeaders(),
+    signal: AbortSignal.timeout(HERMES_TIMEOUT_MS)
+  });
+  const text = await response.text();
+  let payload = { text };
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { text };
+    }
+  }
+  if (!response.ok) {
+    throw new Error(`Hermes Tweet search failed (HTTP ${response.status}): ${text.slice(0, 300)}`);
+  }
+  return normalizeHermesSearchPayload(payload, query, limit);
+}
+
 // src/x.ts
 var DEFAULT_WAIT_TIMEOUT_MS = 15e3;
 var DEFAULT_WAIT_POLL_MS = 300;
@@ -21048,6 +21195,9 @@ async function getTimelinePosts(limit = 10, tabId) {
   return parseJsonResult(raw);
 }
 async function searchXPosts(query, limit = 10) {
+  if (shouldUseHermesSearchBackend()) {
+    return searchHermesPosts(query, limit);
+  }
   const path2 = `/search?q=${encodeURIComponent(query)}&src=typed_query&f=live`;
   const tab = await openXPath(path2);
   await waitForXReady(tab.id, { pathIncludes: "/search", pageKind: "search" });
@@ -23371,7 +23521,7 @@ function slugify2(value) {
 function getDefaultOutputDir() {
   return import_node_path4.default.join(import_node_os3.default.homedir(), ".surfagent", "receipts", "x-research");
 }
-function asRecord(value) {
+function asRecord2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 function summarizeValue(value) {
@@ -23381,8 +23531,8 @@ function summarizeValue(value) {
   return { kind: typeof value, count: 1 };
 }
 function buildRunSummaryMarkdown(kind, label, payload) {
-  const summary = asRecord(payload.summary) ?? {};
-  const outputs = asRecord(payload.outputs) ?? {};
+  const summary = asRecord2(payload.summary) ?? {};
+  const outputs = asRecord2(payload.outputs) ?? {};
   const lines = [
     `# X Research Run`,
     ``,
@@ -23400,7 +23550,7 @@ function buildRunSummaryMarkdown(kind, label, payload) {
     const info = summarizeValue(value);
     lines.push(`- ${key}: ${info.kind} (${info.count})`);
   }
-  const failureClasses = asRecord(summary.failureClasses);
+  const failureClasses = asRecord2(summary.failureClasses);
   if (failureClasses && Object.keys(failureClasses).length) {
     lines.push(``, `## Failure classes`);
     for (const [key, value] of Object.entries(failureClasses)) {
@@ -23424,7 +23574,7 @@ async function maybePersistRun(kind, label, payload, options) {
     await (0, import_promises2.writeFile)(filePath, JSON.stringify(value, null, 2), "utf8");
     files.push(name);
   };
-  const payloadRecord = asRecord(payload) ?? { value: payload };
+  const payloadRecord = asRecord2(payload) ?? { value: payload };
   await writeJson("bundle.json", payload);
   await writeJson("summary.json", {
     kind,
@@ -23436,7 +23586,7 @@ async function maybePersistRun(kind, label, payload, options) {
   if (Array.isArray(payloadRecord.receipts)) {
     await writeJson("receipts.json", payloadRecord.receipts);
   }
-  const outputs = asRecord(payloadRecord.outputs);
+  const outputs = asRecord2(payloadRecord.outputs);
   if (outputs) {
     for (const [key, value] of Object.entries(outputs)) {
       await writeJson(`${slugify2(key)}.json`, value);
@@ -23562,7 +23712,7 @@ function ensureArray(value, key) {
 }
 function pluckPostUrls(searchResult, limit) {
   const posts = ensureArray(searchResult, "posts");
-  const urls = posts.map((post) => typeof post.statusUrl === "string" ? post.statusUrl : null).filter((url2) => Boolean(url2));
+  const urls = posts.map((post) => typeof post.statusUrl === "string" ? post.statusUrl : typeof post.url === "string" ? post.url : null).filter((url2) => Boolean(url2));
   return Array.from(new Set(urls)).slice(0, limit);
 }
 function pluckAuthors(searchResult, limit) {
@@ -23863,6 +24013,22 @@ function main() {
   }
   const server = createXServer();
   assert2(!!server, "Failed to create MCP server instance.");
+  const hermesHeaders = buildHermesHeaders("xq_test");
+  assert2(hermesHeaders["x-api-key"] === "xq_test", "Hermes Tweet x-api-key header was not built.");
+  const hermesSearch = normalizeHermesSearchPayload({
+    data: [
+      {
+        tweetId: "1234567890",
+        fullText: "SurfAgent search fallback",
+        author: { username: "surfagentapp", followers: 42 },
+        metrics: { likes: 3, retweets: 2, replies: 1 }
+      }
+    ]
+  }, "surfagent", 10);
+  const hermesPosts = Array.isArray(hermesSearch.posts) ? hermesSearch.posts : [];
+  const firstHermesPost = hermesPosts[0];
+  assert2(hermesSearch.count === 1, "Hermes Tweet search normalization did not count posts.");
+  assert2(firstHermesPost?.statusUrl === "https://x.com/surfagentapp/status/1234567890", "Hermes Tweet search normalization did not build a status URL.");
   console.log(JSON.stringify({
     ok: true,
     toolCount: toolNames.length,

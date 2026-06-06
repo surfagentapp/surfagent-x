@@ -1,4 +1,5 @@
 import { TOOL_SET, createXServer } from "./server.js";
+import { buildHermesHeaders, normalizeHermesSearchPayload } from "./hermes.js";
 
 const EXPECTED_TOOLS = [
   "x_health_check",
@@ -52,6 +53,24 @@ function main() {
 
   const server = createXServer();
   assert(!!server, "Failed to create MCP server instance.");
+
+  const hermesHeaders = buildHermesHeaders("xq_test");
+  assert(hermesHeaders["x-api-key"] === "xq_test", "Hermes Tweet x-api-key header was not built.");
+
+  const hermesSearch = normalizeHermesSearchPayload({
+    data: [
+      {
+        tweetId: "1234567890",
+        fullText: "SurfAgent search fallback",
+        author: { username: "surfagentapp", followers: 42 },
+        metrics: { likes: 3, retweets: 2, replies: 1 },
+      },
+    ],
+  }, "surfagent", 10);
+  const hermesPosts = Array.isArray(hermesSearch.posts) ? hermesSearch.posts : [];
+  const firstHermesPost = hermesPosts[0] as Record<string, unknown> | undefined;
+  assert(hermesSearch.count === 1, "Hermes Tweet search normalization did not count posts.");
+  assert(firstHermesPost?.statusUrl === "https://x.com/surfagentapp/status/1234567890", "Hermes Tweet search normalization did not build a status URL.");
 
   console.log(JSON.stringify({
     ok: true,

@@ -140,6 +140,26 @@ If you are new to SurfAgent, start here first:
 - `SURFAGENT_AUTH_TOKEN` optional override, otherwise auto-detected
 - `SURFAGENT_RUN_DIR` optional override for task-runner journals and screenshots
 
+### Optional Hermes Tweet Search Backend
+
+By default, `x_search_posts` opens X through SurfAgent and extracts the live
+search timeline from the browser. If you want public post search to run through
+Hermes Tweet/Xquik while keeping navigation, extraction, actions, and recovery
+browser-native, set:
+
+```bash
+SURFAGENT_X_READ_BACKEND=hermes
+HERMES_TWEET_API_KEY=xq_...
+```
+
+`XQUIK_API_KEY` also works if that is how the key is already stored. Set
+`HERMES_TWEET_BASE_URL` or `XQUIK_BASE_URL` only for a custom gateway.
+
+This backend applies to `x_search_posts` and to the initial post-search step in
+`x_research_topic`. It does not affect posting, replies, likes, reposts,
+profile extraction, thread extraction, community extraction, or browser
+recovery flows.
+
 ## Status
 
 Early, but already one of the more capable SurfAgent adapters.

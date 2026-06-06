@@ -279,7 +279,9 @@ function ensureArray<T>(value: unknown, key: string): T[] {
 
 function pluckPostUrls(searchResult: unknown, limit: number): string[] {
   const posts = ensureArray<Record<string, unknown>>(searchResult, "posts");
-  const urls = posts.map((post) => typeof post.statusUrl === "string" ? post.statusUrl : null).filter((url): url is string => Boolean(url));
+  const urls = posts
+    .map((post) => typeof post.statusUrl === "string" ? post.statusUrl : typeof post.url === "string" ? post.url : null)
+    .filter((url): url is string => Boolean(url));
   return Array.from(new Set(urls)).slice(0, limit);
 }
 
